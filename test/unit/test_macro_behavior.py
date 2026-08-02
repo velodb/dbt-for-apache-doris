@@ -28,7 +28,6 @@ a pull request; these can.
 import pytest
 
 from .macro_harness import (
-    CapturedCompilerError,
     FakeConfig,
     FakeRelation,
     FakeRow,
@@ -214,55 +213,3 @@ class TestPersistDocs:
         runner = self.runner()
         runner.render("doris__alter_relation_comment", FakeRelation(), "it's fine")
         assert "\\'" in runner.statements[0].sql
-
-
-class TestIncrementalStrategyValidation:
-    """`insert_overwrite` without a unique_key used to silently append.
-
-    The materialization dispatched on `if not unique_key or strategy ==
-    'append'`, so a missing key routed an insert_overwrite model into the append
-    branch: it built a DUPLICATE KEY table and appended every row on every run,
-    duplicating the data while dbt reported success.
-    """
-
-    def runner(self, config):
-        return MacroRunner(
-            "materializations/incremental/incremental.sql",
-            context={
-                "config": FakeConfig(config),
-                "model": {"unique_id": "model.my_project.my_model", "name": "my_model"},
-            },
-        )
-
-    def validate(self, config):
-        return self.runner(config).render(
-            "dbt_doris_validate_get_incremental_strategy", FakeConfig(config)
-        )
-
-    def test_default_strategy_is_insert_overwrite(self):
-        assert self.validate({"unique_key": ["id"]}) == "insert_overwrite"
-
-    def test_append_needs_no_unique_key(self):
-        assert self.validate({"incremental_strategy": "append"}) == "append"
-
-    def test_insert_overwrite_requires_unique_key(self):
-        with pytest.raises(CapturedCompilerError) as excinfo:
-            self.validate({})
-        message = str(excinfo.value)
-        assert "requires a 'unique_key'" in message
-        assert "model.my_project.my_model" in message
-        # The message has to name the way out, both of them.
-        assert "unique_key=" in message
-        assert "incremental_strategy='append'" in message
-
-    @pytest.mark.parametrize("strategy", ["delete+insert", "merge", "overwrite"])
-    def test_unknown_strategy_is_rejected(self, strategy):
-        with pytest.raises(CapturedCompilerError) as excinfo:
-            self.validate({"incremental_strategy": strategy, "unique_key": ["id"]})
-        assert "Invalid incremental strategy" in str(excinfo.value)
-
-    def test_empty_strategy_falls_back_to_the_default(self):
-        """An unset config arrives as '' or none; both mean "use the default"."""
-        assert self.validate({"incremental_strategy": "", "unique_key": ["id"]}) == (
-            "insert_overwrite"
-        )

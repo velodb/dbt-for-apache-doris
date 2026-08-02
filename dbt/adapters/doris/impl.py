@@ -21,6 +21,8 @@
 from dbt.adapters.sql import SQLAdapter
 
 from enum import Enum
+import re
+import time
 from typing import (
     Any,
     Dict,
@@ -33,6 +35,7 @@ from typing import (
 import agate
 import dbt.exceptions
 from dbt.adapters.base.relation import BaseRelation
+from dbt.adapters.base.meta import available
 from dbt.adapters.doris.column import DorisColumn
 from dbt.adapters.doris.connections import DorisConnectionManager
 from dbt.adapters.doris.relation import DorisRelation
@@ -72,6 +75,133 @@ class DorisAdapter(SQLAdapter):
     Relation = DorisRelation
     AdapterSpecificConfigs = DorisConfig
     Column = DorisColumn
+
+    def valid_incremental_strategies(self):
+        """Return the dbt built-in strategies implemented by dbt-doris."""
+        return ["append", "merge", "delete+insert", "insert_overwrite"]
+
+    @staticmethod
+    def _parse_doris_version(version_string):
+        if not version_string:
+            return None
+
+        match = re.search(
+            r"(?:doris\s+version\s+)?doris-"
+            r"(\d+)\.(\d+)(?:\.(\d+))?",
+            str(version_string),
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return None
+
+        return tuple(int(part or 0) for part in match.groups())
+
+    def _doris_version(self):
+        _, variables = self.execute(
+            "show variables like 'version_comment'",
+            auto_begin=False,
+            fetch=True,
+        )
+        if len(variables.rows) > 0:
+            version = self._parse_doris_version(variables.rows[0][1])
+            if version is not None and version != (0, 0, 0):
+                return version
+
+        # Source/custom builds may omit a usable version from version_comment.
+        _, frontends = self.execute(
+            "show frontends",
+            auto_begin=False,
+            fetch=True,
+        )
+        version_index = list(frontends.column_names).index("Version")
+        connected_index = (
+            list(frontends.column_names).index("CurrentConnected")
+            if "CurrentConnected" in frontends.column_names
+            else None
+        )
+        rows = list(frontends.rows)
+        if connected_index is not None:
+            connected_rows = [
+                row
+                for row in rows
+                if str(row[connected_index]).lower() in ("yes", "true")
+            ]
+            if connected_rows:
+                rows = connected_rows
+
+        for row in rows:
+            version = self._parse_doris_version(row[version_index])
+            if version is not None and version != (0, 0, 0):
+                return version
+        return None
+
+    @available
+    def supports_transactional_delete_insert(self):
+        """Whether Doris supports DELETE and INSERT SELECT in one transaction."""
+        version = self._doris_version()
+        return version is not None and version >= (3, 0, 0)
+
+    def _latest_schema_change_job(self, relation: BaseRelation):
+        schema = self.quote(relation.schema)
+        table_name = relation.identifier.replace("'", "''")
+        _, table = self.execute(
+            "show alter table column from {} "
+            "where TableName = '{}' "
+            "order by JobId desc limit 1".format(schema, table_name),
+            auto_begin=False,
+            fetch=True,
+        )
+        if len(table.rows) == 0:
+            return None
+
+        row = table.rows[0]
+        return {
+            "job_id": str(row[0]),
+            "state": str(row[9]).upper(),
+            "message": str(row[10] or ""),
+        }
+
+    @available
+    def get_latest_schema_change_job_id(self, relation: BaseRelation):
+        """Return the newest column-alter job id for a Doris table."""
+        job = self._latest_schema_change_job(relation)
+        return None if job is None else job["job_id"]
+
+    @available
+    def wait_for_schema_change(
+        self,
+        relation: BaseRelation,
+        previous_job_id=None,
+        timeout_seconds: int = 300,
+    ):
+        """Wait for the column-alter job started by the preceding DDL."""
+        deadline = time.monotonic() + timeout_seconds
+
+        while True:
+            job = self._latest_schema_change_job(relation)
+            if job is None or job["job_id"] == previous_job_id:
+                return
+            if job["state"] == "FINISHED":
+                return
+            if job["state"] == "CANCELLED":
+                raise dbt.exceptions.DbtRuntimeError(
+                    "Doris schema change job {} for {} was cancelled: {}".format(
+                        job["job_id"],
+                        relation,
+                        job["message"],
+                    )
+                )
+            if time.monotonic() >= deadline:
+                raise dbt.exceptions.DbtRuntimeError(
+                    "Timed out after {} seconds waiting for Doris schema "
+                    "change job {} on {} (state: {})".format(
+                        timeout_seconds,
+                        job["job_id"],
+                        relation,
+                        job["state"],
+                    )
+                )
+            time.sleep(0.2)
 
     @classmethod
     def date_function(cls) -> str:

@@ -58,6 +58,11 @@ The adapter contains Doris implementations for table, view, incremental,
 partition, snapshot, seed, and asynchronous materialized-view workflows.
 Ephemeral models are compiled by dbt Core.
 
+Incremental models support standard `append`, `merge`, `delete+insert`, and
+native `insert_overwrite` strategies. Configuration, generated Doris SQL,
+staging behavior, and migration notes are documented in
+[docs/incremental.zh-CN.md](docs/incremental.zh-CN.md).
+
 To manage a Doris asynchronous materialized view, configure a model with
 `materialized='materialized_view'`:
 

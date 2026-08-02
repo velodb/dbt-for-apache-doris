@@ -142,7 +142,26 @@ class DorisConnectionManager(SQLConnectionManager):
     def exception_handler(self, sql: str) -> ContextManager:
         try:
             yield
-        except mysql.connector.DatabaseError as e:
+        except mysql.connector.Error as e:
+            # A small number of adapter operations (currently transactional
+            # delete+insert on Doris 3.0+) issue a literal BEGIN. Roll back
+            # immediately on a failed statement so a pooled connection never
+            # retains an open server-side transaction. Outside an explicit
+            # transaction mysql-connector's rollback is a harmless no-op.
+            connection = self.get_if_exists()
+            if connection is not None and connection.handle is not None:
+                try:
+                    connection.handle.rollback()
+                except Exception:
+                    # The server-side transaction state is now unknown. Mark
+                    # the connection unusable so the pool cannot issue later
+                    # model SQL on it.
+                    connection.state = "fail"
+                    logger.debug(
+                        "Failed to roll back Doris connection after error; "
+                        "marking the connection failed"
+                    )
+                connection.transaction_open = False
             logger.debug(f"Doris database error: {e}, sql: {sql}")
             raise exceptions.DbtRuntimeError(str(e)) from e
         except Exception as e:
@@ -257,12 +276,9 @@ class DorisConnectionManager(SQLConnectionManager):
 
         if cursor is not None and not cursor.with_rows:
             drained = 0
-            try:
+            with self.exception_handler(sql):
                 while cursor.nextset():
                     drained += 1
-            except mysql.connector.Error:
-                # Nothing left to advance to; the queue is clear either way.
-                pass
             if drained:
                 logger.debug(
                     f"Drained {drained} extra result set(s); a macro emitted "
