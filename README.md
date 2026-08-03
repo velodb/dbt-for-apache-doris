@@ -12,7 +12,7 @@ dbt Labs release.
 | Component | Supported baseline |
 | --- | --- |
 | dbt Core | 1.12.x |
-| Apache Doris | 2.1.5 or newer |
+| Apache Doris | 2.1.5+ expected minimum; exact releases are listed in the Incremental guide |
 | Python | 3.10 or newer |
 | Database protocol | Doris MySQL protocol |
 
@@ -58,10 +58,12 @@ The adapter contains Doris implementations for table, view, incremental,
 partition, snapshot, seed, and asynchronous materialized-view workflows.
 Ephemeral models are compiled by dbt Core.
 
-Incremental models support standard `append`, `merge`, `delete+insert`, and
-native `insert_overwrite` strategies. Configuration, generated Doris SQL,
-staging behavior, and migration notes are documented in
-[docs/incremental.zh-CN.md](docs/incremental.zh-CN.md).
+Incremental models support `append`, `merge`, and native `insert_overwrite`.
+`delete+insert` is rejected; use a Doris Unique Key target with `merge` for
+upsert semantics. Configuration, generated Doris SQL, staging behavior,
+migration notes, and the validation matrix are documented in
+[Incremental user guide](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental.zh-CN.md)
+and [Incremental test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md).
 
 To manage a Doris asynchronous materialized view, configure a model with
 `materialized='materialized_view'`:

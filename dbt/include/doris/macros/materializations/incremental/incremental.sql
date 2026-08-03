@@ -20,27 +20,23 @@
   {% set existing_relation = load_cached_relation(this) %}
   {% set temp_relation = make_temp_relation(target_relation) %}
   {% set intermediate_relation = make_intermediate_relation(target_relation) %}
-  {# A failed view -> table replacement can leave the old object at dbt's
-     backup name while the canonical target is absent. Restore it before stale
-     helper cleanup, so a retry can never delete the only good copy. #}
+  {% set recovered_from_backup = false %}
+  {# A failed type replacement can leave the old object at dbt's backup name
+     while the canonical target is absent. Keep that durable recovery marker
+     in place until a complete target build succeeds. Moving it back to the
+     canonical name before the model succeeds would make the next invocation's
+     is_incremental() return true after another failure. #}
   {% set recovery_backup_relation = load_cached_relation(
       make_backup_relation(target_relation, 'table')
   ) %}
   {% if existing_relation is none and recovery_backup_relation is not none %}
-      {% set recovery_target_relation = target_relation.incorporate(
-          type=recovery_backup_relation.type
-      ) %}
-      {% do adapter.rename_relation(
-          recovery_backup_relation,
-          recovery_target_relation
-      ) %}
-      {% set existing_relation = load_cached_relation(
-          recovery_target_relation
-      ) %}
+      {% set recovered_from_backup = true %}
   {% endif %}
 
   {% set backup_relation_type = (
-      'table' if existing_relation is none else existing_relation.type
+      'table'
+      if existing_relation is none or existing_relation.is_view
+      else existing_relation.type
   ) %}
   {% set backup_relation = make_backup_relation(
       target_relation,
@@ -61,6 +57,7 @@
   ) %}
   {% set full_refresh_mode = (
       should_full_refresh()
+      or recovered_from_backup
       or (existing_relation is not none and existing_relation.type != 'table')
   ) %}
   {% set on_schema_change = incremental_validate_on_schema_change(
@@ -74,15 +71,8 @@
   {% set overwrite_partitions = config.get('overwrite_partitions', none) %}
   {% set grant_config = config.get('grants') %}
 
-  {% set preexisting_temp_relation = load_cached_relation(temp_relation) %}
-  {% set preexisting_intermediate_relation = load_cached_relation(
-      intermediate_relation
-  ) %}
-  {% set preexisting_backup_relation = load_cached_relation(backup_relation) %}
-  {{ drop_relation_if_exists(preexisting_temp_relation) }}
-  {{ drop_relation_if_exists(preexisting_intermediate_relation) }}
-  {{ drop_relation_if_exists(preexisting_backup_relation) }}
-
+  {# Reject an incompatible target before hooks, helper cleanup, staging, DDL,
+     or DML so a failed preflight is completely side-effect free. #}
   {% if existing_relation is not none and not full_refresh_mode %}
       {% do doris__validate_incremental_target(
           effective_strategy,
@@ -91,12 +81,37 @@
       ) %}
   {% endif %}
 
+  {% set preexisting_temp_relation = load_cached_relation(temp_relation) %}
+  {% set preexisting_intermediate_relation = load_cached_relation(
+      intermediate_relation
+  ) %}
+  {% set preexisting_backup_relation = (
+      none
+      if recovered_from_backup
+      else load_cached_relation(backup_relation)
+  ) %}
+  {{ drop_relation_if_exists(preexisting_temp_relation) }}
+  {{ drop_relation_if_exists(preexisting_intermediate_relation) }}
+  {{ drop_relation_if_exists(preexisting_backup_relation) }}
+
+  {# Snapshot an active View before this model's hooks or sql_header can alter
+     the session used to evaluate it. Keep the View online until the physical
+     replacement has been built successfully. #}
+  {% if existing_relation is not none and existing_relation.is_view %}
+      {% do doris__snapshot_view_data_to_table(
+          existing_relation,
+          backup_relation
+      ) %}
+  {% endif %}
+
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
   {% set to_drop = [] %}
+  {% if recovered_from_backup %}
+      {% do to_drop.append(recovery_backup_relation) %}
+  {% endif %}
   {% set need_swap = false %}
-  {% set delete_insert_transaction = false %}
   {% set sql_header = config.get('sql_header', none) %}
   {# Execute the header once, before metadata inspection and model SQL. Embedding
      it in the empty-schema query loses cursor.description when the header is a
@@ -107,79 +122,14 @@
   {% endif %}
   {% set source_sql = doris__table_colume_type(sql) %}
 
-  {# A MOW Unique Key INSERT already has the exact final-row semantics of
-     delete+insert when predicates and partial updates are absent. Avoid the
-     physical batch and the Doris 3.0 transaction requirement in that case.
-     Existing MOR Unique targets retain the real two-statement strategy. #}
-  {% set execution_strategy = effective_strategy %}
-  {% set target_has_sequence_column = false %}
-  {% if (
-      existing_relation is not none
-      and not full_refresh_mode
-      and effective_strategy == 'delete+insert'
-  ) %}
-      {% set target_has_sequence_column =
-          doris__has_physical_sequence_column(target_relation) %}
-  {% endif %}
-  {% if target_has_sequence_column %}
-      {% do exceptions.raise_compiler_error(
-          "Doris incremental strategy 'delete+insert' is unsafe for a "
-          ~ "Unique Key target with a physical Sequence Column on "
-          ~ model.unique_id ~ ": the DELETE tombstone can retain the old "
-          ~ "sequence and suppress the replacement INSERT. Use strategy='merge' "
-          ~ "to preserve Doris Sequence semantics, or rebuild without Sequence."
-      ) %}
-  {% endif %}
-  {% if (
-      existing_relation is not none
-      and not full_refresh_mode
-      and effective_strategy == 'delete+insert'
-      and doris__is_mow_unique_model(target_relation)
-      and not target_has_sequence_column
-  ) %}
-      {% set execution_strategy = 'merge' %}
-      {% set strategy_sql_macro_func = adapter.get_incremental_strategy_macro(
-          context,
-          'merge'
-      ) %}
-      {% do log(
-          "Routing Doris delete+insert to one-statement MOW Unique Key upsert "
-          ~ "for " ~ target_relation,
-          info=false
-      ) %}
-  {% endif %}
-
-  {# Validate configured keys against the query metadata before CTAS, DELETE,
-     INSERT, or target schema mutation. This is a zero-row metadata query. #}
+  {# Validate configured keys against the query metadata before CTAS, INSERT,
+     or target schema mutation. This is a zero-row metadata query. #}
   {% set source_columns = none %}
-  {% if effective_strategy in ['merge', 'delete+insert'] %}
-      {% set source_columns = get_column_schema_from_query(
-          source_sql
-      ) %}
+  {% if effective_strategy == 'merge' %}
+      {% set source_columns = get_column_schema_from_query(source_sql) %}
       {% do doris__validate_source_unique_key_columns(
           source_columns,
           unique_key
-      ) %}
-  {% endif %}
-
-  {% if (
-      execution_strategy == 'delete+insert'
-      and (
-          (existing_relation is not none and not full_refresh_mode)
-          or (
-              (config.get('properties', none) or {}).get(
-                  'enable_unique_key_merge_on_write',
-                  none
-              ) | string | lower == 'false'
-          )
-      )
-      and not adapter.supports_transactional_delete_insert()
-  ) %}
-      {% do exceptions.raise_compiler_error(
-          "Doris incremental strategy 'delete+insert' requires Doris 3.0+ "
-          ~ "for transactional DELETE plus INSERT on " ~ model.unique_id
-          ~ ". Use a MOW Unique Key table without a Sequence Column and "
-          ~ "strategy='merge', or upgrade Doris."
       ) %}
   {% endif %}
 
@@ -207,16 +157,13 @@
       {% set temp_relation_exists = false %}
       {% set dest_columns = none %}
 
-      {# Multi-statement/custom strategies and schema-changing runs need a
-         frozen batch. Ordinary built-ins use only a metadata view and execute
-         one direct DML against inline source_sql. #}
+      {# Schema-changing runs and custom strategies need a frozen batch.
+         Ordinary built-ins use a logical metadata view, not a physical staging
+         table, and finish with one DML statement. #}
       {% set needs_physical_staging = (
-          execution_strategy not in ['append', 'merge', 'insert_overwrite']
+          effective_strategy not in ['append', 'merge', 'insert_overwrite']
           or on_schema_change != 'ignore'
       ) %}
-      {% if execution_strategy == 'delete+insert' %}
-          {% set delete_insert_transaction = true %}
-      {% endif %}
 
       {% if needs_physical_staging %}
           {% do run_query(doris__create_incremental_staging_table(
@@ -241,16 +188,28 @@
       {% endif %}
 
       {% if source_relation is not none %}
-          {% if on_schema_change != 'ignore' %}
+          {% if (
+              on_schema_change != 'ignore'
+              or effective_strategy == 'merge'
+          ) %}
               {% set schema_changes = check_for_schema_changes(
                   source_relation,
                   existing_relation
               ) %}
-              {% if effective_strategy in ['merge', 'delete+insert'] %}
+              {% if effective_strategy == 'merge' %}
                   {% do doris__validate_unique_key_schema_changes(
                       schema_changes,
-                      unique_key
+                      unique_key,
+                      source_relation
                   ) %}
+              {% endif %}
+
+              {% if (
+                  on_schema_change == 'fail'
+                  and schema_changes['schema_changed']
+              ) %}
+                  {% do adapter.drop_relation(source_relation) %}
+                  {% do doris__raise_schema_change_failure(schema_changes) %}
               {% endif %}
 
           {% endif %}
@@ -313,46 +272,14 @@
           'incremental_predicates': incremental_predicates,
           'source_sql': source_sql,
           'temp_relation_exists': temp_relation_exists,
-          'overwrite_partitions': overwrite_partitions,
-          'doris_transaction_managed': delete_insert_transaction
+          'overwrite_partitions': overwrite_partitions
       } %}
       {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
-      {% if delete_insert_transaction %}
-          {% set delete_sql = doris__get_delete_incremental_rows_sql(
-              strategy_arg_dict
-          ) %}
-      {% endif %}
-  {% endif %}
-
-  {% if delete_insert_transaction %}
-      {% do doris__assert_staged_unique_keys(temp_relation, unique_key) %}
-      {% call statement(
-          'begin_delete_insert_transaction',
-          auto_begin=false
-      ) %}
-          begin
-      {% endcall %}
-      {% call statement('delete_incremental_rows', auto_begin=false) %}
-          {{ delete_sql }}
-      {% endcall %}
   {% endif %}
 
   {% call statement('main') %}
       {{ build_sql }}
   {% endcall %}
-
-  {# DorisConnectionManager.commit intentionally manages only dbt's logical
-     flag. Real delete+insert opened a server transaction, so close it before
-     any hook, SHOW, DDL, grant, docs, or staging cleanup statement. A failed
-     DELETE/INSERT/COMMIT is rolled back by the connection exception handler. #}
-  {% if delete_insert_transaction %}
-      {% call statement(
-          'commit_delete_insert_transaction',
-          auto_begin=false
-      ) %}
-          commit
-      {% endcall %}
-  {% endif %}
 
   {% if existing_relation is none or full_refresh_mode %}
       {% do create_indexes(relation_for_indexes) %}
@@ -368,6 +295,15 @@
               false
           ) %}
           {% do to_drop.append(intermediate_relation) %}
+      {% elif existing_relation.is_view %}
+          {# The recovery snapshot already exists, and the old View remained
+             online while the replacement was built. #}
+          {% do adapter.drop_relation(existing_relation) %}
+          {% do adapter.rename_relation(
+              intermediate_relation,
+              target_relation
+          ) %}
+          {% do to_drop.append(backup_relation) %}
       {% else %}
           {% do adapter.rename_relation(existing_relation, backup_relation) %}
           {% do adapter.rename_relation(intermediate_relation, target_relation) %}
@@ -404,11 +340,15 @@
     sql,
     source_columns=none
 ) %}
-    {% if strategy in ['merge', 'delete+insert'] %}
+    {% if strategy == 'merge' %}
+        {% set ordered_source_columns = doris__unique_key_first_columns(
+            source_columns,
+            config.get('unique_key')
+        ) %}
         {% set validated_sql = doris__validated_unique_ctas_source_sql(
             sql,
             config.get('unique_key'),
-            source_columns
+            ordered_source_columns
         ) %}
         {{ return(doris__create_unique_table_as(
             false,
@@ -448,13 +388,28 @@
         ) %}
     {% endif %}
 
-    {# dbt maps '+' to '_' when resolving a strategy macro. Without this guard,
-       the non-standard alias silently resolves Doris's built-in macro while
-       bypassing dbt's built-in strategy validation. #}
-    {% if strategy == 'delete_insert' %}
+    {% set properties = config.get('properties', none) or {} %}
+    {% set normalized_property_names = [] %}
+    {% for property_name in properties.keys() %}
+        {% do normalized_property_names.append(property_name | lower) %}
+    {% endfor %}
+    {% if 'function_column.sequence_type' in normalized_property_names %}
         {% do exceptions.raise_compiler_error(
-            "Incremental strategy 'delete_insert' is not a dbt strategy name. "
-            ~ "Use 'delete+insert' on model " ~ model.unique_id
+            "dbt-doris incremental models do not support Doris property "
+            ~ "'function_column.sequence_type' on " ~ model.unique_id
+            ~ ": it requires writing the hidden __DORIS_SEQUENCE_COL__ "
+            ~ "column. Use 'function_column.sequence_col' with a visible "
+            ~ "model column instead."
+        ) %}
+    {% endif %}
+
+    {# dbt normalizes '+' to '_' during macro dispatch. Reject both spellings
+       explicitly so neither can resolve a dbt Core global strategy macro. #}
+    {% if strategy in ['delete+insert', 'delete_insert'] %}
+        {% do exceptions.raise_compiler_error(
+            "Incremental strategy '" ~ strategy ~ "' is not supported by "
+            ~ "dbt-doris on model " ~ model.unique_id
+            ~ ". Use 'merge' for Doris Unique Key upsert semantics."
         ) %}
     {% endif %}
 
@@ -462,62 +417,57 @@
         strategy,
         unique_key
     ) %}
-    {% set properties = config.get('properties', none) or {} %}
-    {% set normalized_property_names = [] %}
-    {% for property_name in properties.keys() %}
-        {% do normalized_property_names.append(property_name | lower) %}
-    {% endfor %}
-    {% if (
-        effective_strategy == 'delete+insert'
-        and (
-            'function_column.sequence_col' in normalized_property_names
-            or 'function_column.sequence_type' in normalized_property_names
+    {% set normalized_unique_key = doris__normalize_unique_key(unique_key) %}
+    {% set sequence_column = doris__sequence_column_from_properties() %}
+
+    {% if sequence_column is not none and (
+        sequence_column is not string
+        or not modules.re.fullmatch(
+            '[A-Za-z_][A-Za-z0-9_]*',
+            sequence_column
         )
     ) %}
         {% do exceptions.raise_compiler_error(
-            "Incremental strategy 'delete+insert' cannot create a Doris "
-            ~ "Sequence Column target on " ~ model.unique_id
-            ~ ". Use strategy='merge' to preserve Sequence semantics."
+            "Doris property 'function_column.sequence_col' on model "
+            ~ model.unique_id ~ " must name one unquoted model column."
         ) %}
     {% endif %}
 
-    {% set configured_mow = properties.get(
-        'enable_unique_key_merge_on_write',
-        none
-    ) %}
-    {% if (
-        effective_strategy == 'merge'
-        and configured_mow is not none
-        and configured_mow | string | lower == 'false'
-    ) %}
+    {% if sequence_column is not none and effective_strategy != 'merge' %}
         {% do exceptions.raise_compiler_error(
-            "Incremental strategy 'merge' requires "
-            ~ "properties.enable_unique_key_merge_on_write=true on model "
-            ~ model.unique_id ~ ". Use strategy='delete+insert' for a "
-            ~ "Merge-on-Read Unique Key table."
+            "Doris property 'function_column.sequence_col' is only valid "
+            ~ "with incremental strategy 'merge' on model " ~ model.unique_id
         ) %}
     {% endif %}
 
-    {% set normalized_unique_key = doris__normalize_unique_key(unique_key) %}
-    {% if (
-        effective_strategy in ['merge', 'delete+insert']
-        and not normalized_unique_key
-    ) %}
+    {% if effective_strategy == 'insert_overwrite' and normalized_unique_key %}
         {% set message -%}
-Incremental strategy '{{ effective_strategy }}' requires a 'unique_key' config on model
+Incremental strategy 'insert_overwrite' cannot be combined with 'unique_key'
+on model {{ model.unique_id }}. Older dbt-doris releases used that combination
+for Unique Key upserts; accepting it as native INSERT OVERWRITE could silently
+delete rows absent from the incoming batch. Use strategy='merge' to upsert, or
+remove 'unique_key' to explicitly enable native INSERT OVERWRITE.
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+
+    {% if effective_strategy == 'merge' and not normalized_unique_key %}
+        {% set message -%}
+Incremental strategy 'merge' requires a 'unique_key' config on model
 {{ model.unique_id }}.
 
 Add a key, for example:
     {{ '{{' }} config(
         materialized='incremental',
-        incremental_strategy='{{ effective_strategy }}',
+        incremental_strategy='merge',
         unique_key=['id']
     ) {{ '}}' }}
         {%- endset %}
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
 
-    {% if effective_strategy in ['merge', 'delete+insert'] %}
+    {% if effective_strategy == 'merge' %}
+        {% set normalized_key_names = [] %}
         {% for key in normalized_unique_key %}
             {% if key is not string or not modules.re.fullmatch(
                 '[A-Za-z_][A-Za-z0-9_]*',
@@ -529,6 +479,13 @@ must be unquoted column names containing only letters, digits, and underscores.
                 {%- endset %}
                 {% do exceptions.raise_compiler_error(message) %}
             {% endif %}
+            {% if (key | lower) in normalized_key_names %}
+                {% do exceptions.raise_compiler_error(
+                    "Duplicate unique_key column '" ~ key ~ "' on model "
+                    ~ model.unique_id
+                ) %}
+            {% endif %}
+            {% do normalized_key_names.append(key | lower) %}
         {% endfor %}
     {% endif %}
 
@@ -592,7 +549,6 @@ Config 'overwrite_partitions' is only valid with incremental strategy
     {% if incremental_predicates and effective_strategy in [
         'append',
         'merge',
-        'delete+insert',
         'insert_overwrite'
     ] %}
         {% set message -%}
@@ -611,21 +567,6 @@ Config 'incremental_predicates' is not supported by Doris strategy
 Doris strategy 'merge' currently performs a full-row Unique Key upsert.
 'merge_update_columns' and 'merge_exclude_columns' require the Doris 4.1+
 native MERGE INTO path, which is not enabled yet.
-        {%- endset %}
-        {% do exceptions.raise_compiler_error(message) %}
-    {% endif %}
-
-    {% set properties = config.get('properties', none) or {} %}
-    {% set mow = properties.get('enable_unique_key_merge_on_write') %}
-    {% if (
-        effective_strategy == 'merge'
-        and mow is not none
-        and mow | string | lower != 'true'
-    ) %}
-        {% set message -%}
-Doris strategy 'merge' requires
-properties={'enable_unique_key_merge_on_write': 'true'} on model
-{{ model.unique_id }}.
         {%- endset %}
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}

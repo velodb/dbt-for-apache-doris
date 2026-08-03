@@ -35,6 +35,15 @@ def test_quote_can_be_called_by_dbt_at_class_level():
     assert DorisAdapter.quote("order") == "`order`"
 
 
+def test_incremental_strategy_allowlist_excludes_delete_insert():
+    adapter = object.__new__(DorisAdapter)
+    assert adapter.valid_incremental_strategies() == [
+        "append",
+        "merge",
+        "insert_overwrite",
+    ]
+
+
 def test_quoted_contract_column_renders_without_an_adapter_instance():
     columns = DorisAdapter.render_raw_columns_constraints(
         {

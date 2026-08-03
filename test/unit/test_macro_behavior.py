@@ -28,6 +28,9 @@ a pull request; these can.
 import pytest
 
 from .macro_harness import (
+    CapturedCompilerError,
+    FakeAdapter,
+    FakeColumn,
     FakeConfig,
     FakeRelation,
     FakeRow,
@@ -51,6 +54,7 @@ def table_runner(config=None, model=None, columns_sql="`id` int"):
     return MacroRunner(
         *TABLE_MACROS,
         context={
+            "adapter": FakeAdapter(),
             "config": FakeConfig(config or {"unique_key": ["id"]}),
             "model": model or {},
             # Provided by dbt-core when a contract is enforced.
@@ -114,6 +118,107 @@ class TestSingleStatementDDL:
         # Distinct statement names, or dbt's result store overwrites entries.
         names = [statement.name for statement in runner.statements]
         assert len(set(names)) == len(names), f"statement names collide: {names}"
+
+    def test_unique_table_defaults_to_merge_on_write(self):
+        sql = table_runner().sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(),
+            "select 1 as id",
+        )
+        assert '"enable_unique_key_merge_on_write" = "true"' in sql
+
+    def test_key_and_distribution_columns_are_quoted(self):
+        sql = table_runner(
+            config={
+                "unique_key": ["order"],
+                "distributed_by": ["order"],
+            }
+        ).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(),
+            "select 1 as `order`",
+        )
+
+        assert "UNIQUE KEY ( `order` )" in sql
+        assert "DISTRIBUTED BY HASH ( `order` )" in sql
+
+    def test_explicit_merge_on_read_property_overrides_default(self):
+        properties = {
+            "replication_num": "1",
+            "enable_unique_key_merge_on_write": "false",
+        }
+        sql = table_runner(config={"unique_key": ["id"], "properties": properties}).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(),
+            "select 1 as id",
+        )
+        assert '"enable_unique_key_merge_on_write" = "false"' in sql
+        assert '"enable_unique_key_merge_on_write" = "true"' not in sql
+        assert properties == {
+            "replication_num": "1",
+            "enable_unique_key_merge_on_write": "false",
+        }
+
+    def test_incremental_staging_preserves_replication_allocation(self):
+        sql = table_runner(
+            config={
+                "distributed_by": ["id"],
+                "properties": {
+                    "replication_allocation": "tag.location.default: 1",
+                }
+            }
+        ).sql(
+            "doris__create_incremental_staging_table",
+            FakeRelation(identifier="target__dbt_tmp"),
+            "select 1 as id",
+        )
+
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert '"replication_allocation" = "tag.location.default: 1"' in sql
+        assert '"replication_num"' not in sql
+        assert "distributed by random buckets auto" in sql.lower()
+        assert "distributed by hash" not in sql.lower()
+
+    def test_incremental_staging_prefers_top_level_replication_num(self):
+        sql = table_runner(
+            config={
+                "replication_num": "1",
+                "properties": {
+                    "replication_num": "2",
+                    "replication_allocation": "tag.location.default: 3",
+                },
+            }
+        ).sql(
+            "doris__create_incremental_staging_table",
+            FakeRelation(identifier="target__dbt_tmp"),
+            "select 1 as id",
+        )
+
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert '"replication_num" = "1"' in sql
+        assert '"replication_allocation"' not in sql
+
+    def test_incremental_staging_is_keyless_for_non_keyable_first_column(self):
+        sql = table_runner(
+            config={
+                "duplicate_key": ["id"],
+                "distributed_by": ["id"],
+                "replication_num": "1",
+            }
+        ).sql(
+            "doris__create_incremental_staging_table",
+            FakeRelation(identifier="target__dbt_tmp"),
+            "select cast(1.5 as double) as measure, 1 as id",
+        )
+
+        assert "distributed by random buckets auto" in sql.lower()
+        assert "distributed by hash" not in sql.lower()
+        assert "duplicate key" not in sql.lower()
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert sql.count("select cast(1.5 as double) as measure, 1 as id") == 1
 
 
 class TestContractProjection:
@@ -213,3 +318,518 @@ class TestPersistDocs:
         runner = self.runner()
         runner.render("doris__alter_relation_comment", FakeRelation(), "it's fine")
         assert "\\'" in runner.statements[0].sql
+
+
+INCREMENTAL_MACROS = (
+    "materializations/incremental/incremental.sql",
+    "materializations/incremental/help.sql",
+    "materializations/incremental/strategies.sql",
+)
+
+
+def incremental_args(**updates):
+    values = {
+        "target_relation": FakeRelation(identifier="target"),
+        "temp_relation": FakeRelation(identifier="target__dbt_tmp"),
+        "unique_key": ["id"],
+        "dest_columns": [FakeColumn("id"), FakeColumn("value")],
+        "incremental_predicates": None,
+        "source_sql": "select 1 as id, 'new' as value",
+        "temp_relation_exists": False,
+        "overwrite_partitions": None,
+    }
+    values.update(updates)
+    return values
+
+
+class TestIncrementalStrategyValidation:
+    """The public strategy names map cleanly to Doris table semantics."""
+
+    def runner(self, config):
+        return MacroRunner(
+            *INCREMENTAL_MACROS,
+            context={
+                "adapter": FakeAdapter(),
+                "config": FakeConfig(config),
+                "model": {"unique_id": "model.my_project.my_model", "name": "my_model"},
+            },
+        )
+
+    def validate(self, config):
+        return self.runner(config).render(
+            "dbt_doris_validate_get_incremental_strategy", FakeConfig(config)
+        )
+
+    @pytest.mark.parametrize("config", [{}, {"unique_key": ["id"]}])
+    def test_default_strategy_keeps_public_default_name(self, config):
+        assert self.validate(config) == "default"
+
+    @pytest.mark.parametrize(
+        ("unique_key", "expected"),
+        [(None, "append"), (["id"], "merge")],
+    )
+    def test_default_routes_by_unique_key(self, unique_key, expected):
+        runner = self.runner({})
+        assert (
+            runner.render(
+                "doris__effective_incremental_strategy",
+                "default",
+                unique_key,
+            )
+            == expected
+        )
+
+    def test_append_needs_no_unique_key(self):
+        assert self.validate({"incremental_strategy": "append"}) == "append"
+
+    def test_grants_are_rejected_before_execution(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(
+                {
+                    "incremental_strategy": "append",
+                    "grants": {"select": ["analyst"]},
+                }
+            )
+        assert "grants' config is not implemented" in str(excinfo.value)
+
+    def test_merge_requires_unique_key(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate({"incremental_strategy": "merge"})
+        message = str(excinfo.value)
+        assert "requires a 'unique_key'" in message
+        assert "model.my_project.my_model" in message
+        assert "unique_key=" in message
+
+    @pytest.mark.parametrize("unique_key", ["id", ["tenant_id", "id"]])
+    def test_merge_accepts_single_and_composite_keys(self, unique_key):
+        assert (
+            self.validate({"incremental_strategy": "merge", "unique_key": unique_key}) == "merge"
+        )
+
+    def test_insert_overwrite_needs_no_unique_key(self):
+        assert self.validate({"incremental_strategy": "insert_overwrite"}) == "insert_overwrite"
+
+    def test_insert_overwrite_rejects_legacy_unique_key_combination(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(
+                {
+                    "incremental_strategy": "insert_overwrite",
+                    "unique_key": "id",
+                }
+            )
+        message = str(excinfo.value)
+        assert "could silently" in message
+        assert "strategy='merge'" in message
+        assert "remove 'unique_key'" in message
+
+    @pytest.mark.parametrize("strategy", ["delete+insert", "delete_insert"])
+    def test_delete_insert_is_explicitly_rejected(self, strategy):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate({"incremental_strategy": strategy, "unique_key": ["id"]})
+        message = str(excinfo.value)
+        assert "not supported" in message
+        assert "Use 'merge'" in message
+
+    @pytest.mark.parametrize(
+        "properties",
+        [
+            {"enable_unique_key_merge_on_write": "false"},
+            {"function_column.sequence_col": "updated_at"},
+        ],
+    )
+    def test_merge_accepts_mor_and_sequence_properties(self, properties):
+        assert (
+            self.validate(
+                {
+                    "incremental_strategy": "merge",
+                    "unique_key": "id",
+                    "properties": properties,
+                }
+            )
+            == "merge"
+        )
+
+    def test_merge_rejects_sequence_type_hidden_column_mode(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(
+                {
+                    "incremental_strategy": "merge",
+                    "unique_key": "id",
+                    "properties": {"FUNCTION_COLUMN.SEQUENCE_TYPE": "BIGINT"},
+                }
+            )
+        message = str(excinfo.value)
+        assert "__DORIS_SEQUENCE_COL__" in message
+        assert "function_column.sequence_col" in message
+
+    def test_existing_merge_target_accepts_matching_visible_sequence_mapping(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+                "properties": {
+                    "function_column.sequence_col": "Sequence_ID",
+                },
+            }
+        )
+
+        create_table = '''CREATE TABLE `target` (`id` int, `sequence_id` bigint)
+            UNIQUE KEY(`id`)
+            PROPERTIES (
+            "FUNCTION_COLUMN.SEQUENCE_COL" = "sequence_id",
+            "replication_num" = "1"
+            )'''.replace("\n", "\r\n")
+
+        runner.render(
+            "doris__validate_incremental_sequence_mapping",
+            create_table,
+            FakeRelation(identifier="target"),
+        )
+
+    def test_sequence_property_text_in_comment_is_not_physical_mapping(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+            }
+        )
+
+        runner.render(
+            "doris__validate_incremental_sequence_mapping",
+            '''CREATE TABLE target (`id` int COMMENT
+            '"function_column.sequence_type" = "bigint"')
+            UNIQUE KEY(`id`)
+            PROPERTIES (
+            "replication_num" = "1"
+            )''',
+            FakeRelation(identifier="target"),
+        )
+
+    def test_keyless_duplicate_property_identifies_append_target(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "append",
+            }
+        )
+
+        table_model = runner.render(
+            "doris__table_model_from_create_table",
+            '''CREATE TABLE target (`measure` double)
+            DISTRIBUTED BY RANDOM BUCKETS AUTO
+            PROPERTIES (
+            "enable_duplicate_without_keys_by_default" = "true",
+            "replication_num" = "1"
+            )''',
+        )
+
+        assert table_model == "duplicate"
+
+    @pytest.mark.parametrize(
+        ("properties", "physical_property", "expected"),
+        [
+            (
+                {},
+                '"function_column.sequence_col" = "sequence_id"',
+                "does not configure 'function_column.sequence_col'",
+            ),
+            (
+                {"function_column.sequence_col": "sequence_id"},
+                '"function_column.sequence_col" = "tenant_id"',
+                "sequence mapping column 'tenant_id'",
+            ),
+            (
+                {"function_column.sequence_col": "sequence_id"},
+                '"replication_num" = "1"',
+                "no visible sequence mapping",
+            ),
+            (
+                {},
+                '"function_column.sequence_type" = "bigint"',
+                "__doris_sequence_col__",
+            ),
+        ],
+    )
+    def test_existing_merge_target_rejects_physical_sequence_mismatch(
+        self,
+        properties,
+        physical_property,
+        expected,
+    ):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+                "properties": properties,
+            }
+        )
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            runner.render(
+                "doris__validate_incremental_sequence_mapping",
+                "CREATE TABLE target UNIQUE KEY(id) PROPERTIES (\n"
+                f"{physical_property}\n)",
+                FakeRelation(identifier="target"),
+            )
+
+        assert expected in str(excinfo.value).lower()
+
+    def test_insert_overwrite_rejects_hidden_physical_sequence(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "insert_overwrite",
+            }
+        )
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            runner.render(
+                "doris__validate_incremental_sequence_mapping",
+                "CREATE TABLE target UNIQUE KEY(id) PROPERTIES (\n"
+                '"function_column.sequence_type" = "bigint"\n)',
+                FakeRelation(identifier="target"),
+                "insert_overwrite",
+            )
+
+        message = str(excinfo.value).lower()
+        assert "incremental strategy 'insert_overwrite'" in message
+        assert "__doris_sequence_col__" in message
+        assert "without hidden sequence state" in message
+        assert "strategy 'merge'" in message
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {
+                "incremental_strategy": "append",
+                "properties": {"function_column.sequence_col": "updated_at"},
+            },
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+                "properties": {"function_column.sequence_col": "updated-at"},
+            },
+        ],
+    )
+    def test_sequence_column_requires_merge_and_a_plain_column_name(self, config):
+        with pytest.raises(CapturedCompilerError):
+            self.validate(config)
+
+    def test_merge_rejects_duplicate_configured_key_columns(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(
+                {
+                    "incremental_strategy": "merge",
+                    "unique_key": ["id", "ID"],
+                }
+            )
+        assert "Duplicate unique_key column" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "strategy",
+        ["append", "merge", "insert_overwrite"],
+    )
+    def test_predicates_are_rejected_for_builtins(self, strategy):
+        config = {
+            "incremental_strategy": strategy,
+            "incremental_predicates": ["DBT_INTERNAL_DEST.id > 0"],
+        }
+        if strategy == "merge":
+            config["unique_key"] = "id"
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(config)
+        assert "native MERGE INTO" in str(excinfo.value)
+
+    @pytest.mark.parametrize("option", ["merge_update_columns", "merge_exclude_columns"])
+    def test_partial_merge_configs_are_rejected(self, option):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(
+                {
+                    "incremental_strategy": "merge",
+                    "unique_key": "id",
+                    option: ["value"],
+                }
+            )
+        assert "native MERGE INTO" in str(excinfo.value)
+
+    def test_overwrite_partition_config_is_validated(self):
+        with pytest.raises(CapturedCompilerError):
+            self.validate(
+                {
+                    "incremental_strategy": "append",
+                    "overwrite_partitions": ["p1"],
+                }
+            )
+
+        assert (
+            self.validate(
+                {
+                    "incremental_strategy": "insert_overwrite",
+                    "partition_by": "event_date",
+                    "overwrite_partitions": "*",
+                }
+            )
+            == "insert_overwrite"
+        )
+
+    @pytest.mark.parametrize(
+        "partitions",
+        [[], ["*", "p1"], ["unsafe-name"]],
+    )
+    def test_invalid_overwrite_partitions_are_rejected(self, partitions):
+        with pytest.raises(CapturedCompilerError):
+            self.validate(
+                {
+                    "incremental_strategy": "insert_overwrite",
+                    "partition_by": "event_date",
+                    "overwrite_partitions": partitions,
+                }
+            )
+
+    def test_empty_strategy_falls_back_to_the_default(self):
+        """An unset config arrives as '' or none; both mean "use the default"."""
+        assert self.validate({"incremental_strategy": "", "unique_key": ["id"]}) == "default"
+
+
+class TestIncrementalStrategySql:
+    def runner(self, config=None):
+        return MacroRunner(
+            *INCREMENTAL_MACROS,
+            context={
+                "adapter": FakeAdapter(),
+                "config": FakeConfig(config),
+                "model": {
+                    "unique_id": "model.my_project.my_model",
+                    "name": "my_model",
+                },
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "macro",
+        ["doris__get_incremental_append_sql", "doris__get_incremental_merge_sql"],
+    )
+    def test_direct_insert_is_one_statement_and_reads_source_once(self, macro):
+        sql = self.runner().sql(macro, incremental_args())
+        assert statement_count(sql) == 1
+        assert sql.count("select 1 as id") == 1
+        assert "__dbt_tmp" not in sql
+        assert "insert into `dbt_test`.`target` (`id`, `value`)" in sql
+
+    def test_merge_validates_duplicate_source_keys_in_the_insert(self):
+        sql = self.runner().sql(
+            "doris__get_incremental_merge_sql",
+            incremental_args(),
+        )
+        assert "count(*) over" in sql
+        assert "json_parse(if(" in sql
+        assert "'DBT_INTERNAL_DUPLICATE_KEYS'" in sql
+        assert "select DBT_INTERNAL_VALIDATION_MARKER" not in sql
+
+    def test_merge_validation_column_cannot_collide_with_model_columns(self):
+        columns = [
+            FakeColumn("id"),
+            FakeColumn("DBT_INTERNAL_UNIQUE_KEY_VALIDATION_0"),
+            FakeColumn("DBT_INTERNAL_UNIQUE_KEY_VALIDATION_1"),
+        ]
+        sql = self.runner().sql(
+            "doris__get_incremental_merge_sql",
+            incremental_args(dest_columns=columns),
+        )
+
+        assert "as `DBT_INTERNAL_UNIQUE_KEY_VALIDATION_2`" in sql
+        assert (
+            "DBT_INTERNAL_SOURCE.`DBT_INTERNAL_UNIQUE_KEY_VALIDATION_2` > 1"
+            in sql
+        )
+
+    def test_initial_merge_projects_unique_keys_before_value_columns(self):
+        columns = [
+            FakeColumn("value"),
+            FakeColumn("tenant_id"),
+            FakeColumn("id"),
+        ]
+        ordered = self.runner().render(
+            "doris__unique_key_first_columns",
+            columns,
+            ["tenant_id", "id"],
+        )
+        assert [column.name for column in ordered] == [
+            "tenant_id",
+            "id",
+            "value",
+        ]
+
+    @pytest.mark.parametrize(
+        ("partitions", "expected"),
+        [
+            (None, "insert overwrite table `dbt_test`.`target` (`id`, `value`)"),
+            ("*", "partition(*) (`id`, `value`)"),
+            (["p1", "p2"], "partition(`p1`, `p2`) (`id`, `value`)"),
+        ],
+    )
+    def test_native_insert_overwrite(self, partitions, expected):
+        sql = self.runner().sql(
+            "doris__get_incremental_insert_overwrite_sql",
+            incremental_args(overwrite_partitions=partitions),
+        )
+        assert statement_count(sql) == 1
+        assert expected in sql
+        assert "__dbt_tmp" not in sql
+
+    @pytest.mark.parametrize(
+        "macro",
+        [
+            "doris__get_incremental_append_sql",
+            "doris__get_incremental_merge_sql",
+            "doris__get_incremental_insert_overwrite_sql",
+        ],
+    )
+    def test_standard_five_key_contract_reads_temp_relation(self, macro):
+        args = incremental_args()
+        for key in ("source_sql", "temp_relation_exists", "overwrite_partitions"):
+            args.pop(key)
+        sql = self.runner().sql(macro, args)
+        assert "`dbt_test`.`target__dbt_tmp`" in sql
+
+    @pytest.mark.parametrize(
+        ("unique_key", "expected"),
+        [(None, "select DBT_INTERNAL_SOURCE.`id`"), (["id"], "DBT_INTERNAL_DUPLICATE_KEYS")],
+    )
+    def test_default_sql_routes_by_unique_key(self, unique_key, expected):
+        sql = self.runner().sql(
+            "doris__get_incremental_default_sql",
+            incremental_args(unique_key=unique_key),
+        )
+        assert expected in sql
+
+    def test_unique_key_type_change_requires_full_refresh(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.runner().render(
+                "doris__validate_unique_key_schema_changes",
+                {"new_target_types": [{"column_name": "id", "new_type": "bigint"}]},
+                ["id"],
+            )
+        assert "--full-refresh" in str(excinfo.value)
+
+    def test_sequence_mapping_type_change_requires_full_refresh(self):
+        runner = self.runner(
+            {
+                "properties": {
+                    "function_column.sequence_col": "sequence_value",
+                }
+            }
+        )
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            runner.render(
+                "doris__validate_unique_key_schema_changes",
+                {
+                    "new_target_types": [
+                        {
+                            "column_name": "sequence_value",
+                            "new_type": "varchar(40)",
+                        }
+                    ]
+                },
+                ["id"],
+            )
+        assert "Sequence mapping" in str(excinfo.value)
+        assert "--full-refresh" in str(excinfo.value)

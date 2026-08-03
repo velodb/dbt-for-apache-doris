@@ -39,6 +39,21 @@
 {% endmacro %}
 
 
+{% macro doris__sequence_column_from_properties() %}
+    {% set sequence_columns = [] %}
+    {% set properties = config.get('properties', none) or {} %}
+    {% for property_name, property_value in properties.items() %}
+        {% if (property_name | string | lower) == 'function_column.sequence_col' %}
+            {% do sequence_columns.append(property_value) %}
+        {% endif %}
+    {% endfor %}
+    {% if sequence_columns %}
+        {{ return(sequence_columns[0]) }}
+    {% endif %}
+    {{ return(none) }}
+{% endmacro %}
+
+
 {% macro doris__effective_incremental_strategy(strategy, unique_key) %}
     {% if strategy == 'default' %}
         {{ return('merge' if doris__normalize_unique_key(unique_key) else 'append') }}
@@ -72,27 +87,78 @@ column(s) {{ missing_keys }}. No target data has been changed.
         {%- endset %}
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
+
+    {% set sequence_column = doris__sequence_column_from_properties() %}
+    {% if (
+        sequence_column is not none
+        and sequence_column | lower not in source_names
+    ) %}
+        {% set message -%}
+Incremental model {{ model.unique_id }} does not return configured Doris
+Sequence mapping column '{{ sequence_column }}'. No target data has been changed.
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
 {% endmacro %}
 
 
-{% macro doris__validate_unique_key_schema_changes(schema_changes, unique_key) %}
-    {% set unique_keys = [] %}
-    {% for key in doris__normalize_unique_key(unique_key) %}
-        {% do unique_keys.append(key | lower) %}
+{% macro doris__unique_key_first_columns(source_columns, unique_key) %}
+    {# Doris requires all key columns to be the ordered prefix of the physical
+       schema. A model query is free to return them in any position, so project
+       the initial/full-refresh CTAS in configured key order first. #}
+    {% set unique_keys = doris__normalize_unique_key(unique_key) %}
+    {% set key_names = [] %}
+    {% set ordered_columns = [] %}
+
+    {% for key in unique_keys %}
+        {% do key_names.append(key | lower) %}
+        {% for column in source_columns %}
+            {% if (column.name | lower) == (key | lower) %}
+                {% do ordered_columns.append(column) %}
+            {% endif %}
+        {% endfor %}
     {% endfor %}
 
-    {% set changed_key_types = [] %}
-    {% for type_change in schema_changes['new_target_types'] %}
-        {% if type_change['column_name'] | lower in unique_keys %}
-            {% do changed_key_types.append(type_change['column_name']) %}
+    {% for column in source_columns %}
+        {% if column.name | lower not in key_names %}
+            {% do ordered_columns.append(column) %}
         {% endif %}
     {% endfor %}
 
-    {% if changed_key_types %}
+    {{ return(ordered_columns) }}
+{% endmacro %}
+
+
+{% macro doris__validate_unique_key_schema_changes(
+    schema_changes,
+    unique_key,
+    source_relation=none
+) %}
+    {% set protected_columns = [] %}
+    {% for key in doris__normalize_unique_key(unique_key) %}
+        {% do protected_columns.append(key | lower) %}
+    {% endfor %}
+    {% set sequence_column = doris__sequence_column_from_properties() %}
+    {% if sequence_column is not none %}
+        {% do protected_columns.append(sequence_column | lower) %}
+    {% endif %}
+
+    {% set changed_protected_types = [] %}
+    {% for type_change in schema_changes['new_target_types'] %}
+        {% if type_change['column_name'] | lower in protected_columns %}
+            {% do changed_protected_types.append(type_change['column_name']) %}
+        {% endif %}
+    {% endfor %}
+
+    {% if changed_protected_types %}
+        {% if source_relation is not none %}
+            {% do adapter.drop_relation(source_relation) %}
+        {% endif %}
         {% set message -%}
-Incremental model {{ model.unique_id }} changes the data type of UNIQUE KEY
-column(s) {{ changed_key_types }}. Doris cannot mutate physical key columns
-during an incremental run; use --full-refresh.
+Incremental model {{ model.unique_id }} changes the data type of immutable Doris
+UNIQUE KEY or Sequence mapping column(s) {{ changed_protected_types }}. Doris
+cannot mutate these physical columns during an incremental run; use
+--full-refresh.
         {%- endset %}
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
@@ -136,13 +202,17 @@ during an incremental run; use --full-refresh.
 
 {#
     Make duplicate source keys fail inside the same statement as a direct Unique
-    Key upsert. The source is consumed once by a windowed derived table. A
-    correlated scalar subquery maps every duplicate count to two constant rows,
-    which Doris rejects before publishing the INSERT.
+    Key upsert. The source is consumed once by a windowed derived table. For a
+    duplicate row, json_parse receives a deliberately invalid sentinel and
+    cancels the DML before Doris publishes it. Valid rows parse an empty JSON
+    object, so the predicate remains true.
 
-    Do not rewrite this as two consumers of a CTE: Doris 2.1 may inline both
-    consumers, evaluating volatile model SQL twice and validating a different
-    batch from the one inserted.
+    Doris 2.1 restricts correlated scalar subqueries in binary predicates, so
+    this must not use a multi-row scalar-subquery guard. Do not rewrite it as two
+    consumers of a CTE either: Doris may inline both consumers, evaluating
+    volatile model SQL twice and validating a different batch from the one
+    inserted. The window-result alias is selected from n + 1 reserved candidates
+    so it cannot collide with any of the n model columns.
 #}
 {% macro doris__validated_unique_source_select(arg_dict) %}
     {% set unique_key = doris__normalize_unique_key(arg_dict['unique_key']) %}
@@ -152,6 +222,18 @@ during an incremental run; use --full-refresh.
         source_sql is none
     ) %}
     {% set dest_columns = arg_dict['dest_columns'] %}
+    {% set dest_column_names = [] %}
+    {% for column in dest_columns %}
+        {% do dest_column_names.append(column.name | lower) %}
+    {% endfor %}
+    {# There are n destination names and n + 1 candidates, so one is free. #}
+    {% set validation = namespace(column=none) %}
+    {% for candidate_index in range((dest_columns | length) + 1) %}
+        {% set candidate = 'DBT_INTERNAL_UNIQUE_KEY_VALIDATION_' ~ candidate_index %}
+        {% if validation.column is none and candidate | lower not in dest_column_names %}
+            {% set validation.column = candidate %}
+        {% endif %}
+    {% endfor %}
 
     select
         {% for column in dest_columns -%}
@@ -171,7 +253,7 @@ during an incremental run; use --full-refresh.
                 ) > 1,
                 2,
                 1
-            ) as DBT_INTERNAL_UNIQUE_KEY_VALIDATION
+            ) as {{ adapter.quote(validation.column) }}
         from (
             {% if temp_relation_exists %}
             select * from {{ arg_dict['temp_relation'] }}
@@ -180,18 +262,11 @@ during an incremental run; use --full-refresh.
             {% endif %}
         ) DBT_INTERNAL_RAW_SOURCE
     ) DBT_INTERNAL_SOURCE
-    where (
-        select DBT_INTERNAL_VALIDATION_MARKER
-        from (
-            select 1 as DBT_INTERNAL_VALIDATION_MARKER
-            union all
-            select 2 as DBT_INTERNAL_VALIDATION_MARKER
-            union all
-            select 2 as DBT_INTERNAL_VALIDATION_MARKER
-        ) DBT_INTERNAL_DUPLICATE_KEYS
-        where DBT_INTERNAL_DUPLICATE_KEYS.DBT_INTERNAL_VALIDATION_MARKER
-            = DBT_INTERNAL_SOURCE.DBT_INTERNAL_UNIQUE_KEY_VALIDATION
-    ) = 1
+    where json_parse(if(
+        DBT_INTERNAL_SOURCE.{{ adapter.quote(validation.column) }} > 1,
+        'DBT_INTERNAL_DUPLICATE_KEYS',
+        '{}'
+    )) is not null
 {% endmacro %}
 
 
@@ -209,49 +284,8 @@ during an incremental run; use --full-refresh.
     {{ return(doris__validated_unique_source_select(arg_dict)) }}
 {% endmacro %}
 
-
-{% macro doris__assert_staged_unique_keys(temp_relation, unique_key) %}
-    {% set arg_dict = {
-        'temp_relation': temp_relation,
-        'temp_relation_exists': true,
-        'unique_key': unique_key,
-        'dest_columns': adapter.get_columns_in_relation(temp_relation)
-    } %}
-    {% call statement('validate_incremental_unique_keys', fetch_result=true) %}
-        select count(*)
-        from (
-            {{ doris__validated_unique_source_select(arg_dict) }}
-        ) DBT_INTERNAL_VALIDATED_SOURCE
-    {% endcall %}
-{% endmacro %}
-
-
 {% macro doris__create_incremental_schema_view(relation, source_sql) %}
     create or replace view {{ relation }} as {{ source_sql }}
-{% endmacro %}
-
-
-{% macro doris__schema_changes_from_columns(source_columns, target_columns) %}
-    {% set source_not_in_target = diff_columns(source_columns, target_columns) %}
-    {% set target_not_in_source = diff_columns(target_columns, source_columns) %}
-    {% set new_target_types = diff_column_data_types(
-        source_columns,
-        target_columns
-    ) %}
-    {% set schema_changed = (
-        source_not_in_target | length > 0
-        or target_not_in_source | length > 0
-        or new_target_types | length > 0
-    ) %}
-
-    {{ return({
-        'schema_changed': schema_changed,
-        'source_not_in_target': source_not_in_target,
-        'target_not_in_source': target_not_in_source,
-        'source_columns': source_columns,
-        'target_columns': target_columns,
-        'new_target_types': new_target_types
-    }) }}
 {% endmacro %}
 
 
@@ -308,40 +342,29 @@ schema manually, or run:
 {% endmacro %}
 
 
-{% macro doris__get_table_model(target_relation) %}
-    {% set create_table = doris__show_create_table(target_relation) | upper %}
-    {% if 'UNIQUE KEY(' in create_table %}
+{% macro doris__table_model_from_create_table(create_table) %}
+    {% set normalized_ddl = create_table | upper %}
+    {% set keyless_duplicate = modules.re.search(
+        '(?im)^[ \t]*"enable_duplicate_without_keys_by_default"[ \t]*=[ \t]*"true"[ \t]*,?[ \t]*\r?$',
+        create_table
+    ) %}
+    {% if 'UNIQUE KEY(' in normalized_ddl %}
         {{ return('unique') }}
-    {% elif 'AGGREGATE KEY(' in create_table %}
+    {% elif 'AGGREGATE KEY(' in normalized_ddl %}
         {{ return('aggregate') }}
-    {% elif 'DUPLICATE KEY(' in create_table %}
+    {% elif (
+        'DUPLICATE KEY(' in normalized_ddl
+        or keyless_duplicate is not none
+    ) %}
         {{ return('duplicate') }}
     {% endif %}
     {{ return('unknown') }}
 {% endmacro %}
 
 
-{% macro doris__is_mow_unique_model(target_relation) %}
-    {% set create_table = doris__show_create_table(
-        target_relation,
-        statement_name='doris_incremental_show_create_mow'
-    ) | lower | replace(' ', '') | replace('\n', '') %}
-    {{ return(
-        'uniquekey(' in create_table
-        and '"enable_unique_key_merge_on_write"="true"' in create_table
-    ) }}
-{% endmacro %}
-
-
-{% macro doris__has_physical_sequence_column(target_relation) %}
-    {% set create_table = doris__show_create_table(
-        target_relation,
-        statement_name='doris_incremental_show_create_sequence'
-    ) | lower | replace(' ', '') | replace('\n', '') %}
-    {{ return(
-        '"function_column.sequence_col"=' in create_table
-        or '"function_column.sequence_type"=' in create_table
-    ) }}
+{% macro doris__get_table_model(target_relation) %}
+    {% set create_table = doris__show_create_table(target_relation) %}
+    {{ return(doris__table_model_from_create_table(create_table)) }}
 {% endmacro %}
 
 
@@ -363,8 +386,99 @@ schema manually, or run:
 {% endmacro %}
 
 
+{% macro doris__validate_incremental_sequence_mapping(
+    create_table,
+    target_relation,
+    strategy='merge'
+) %}
+    {# Match only canonical SHOW CREATE property lines. Searching a compacted
+       full DDL can mistake a table or column comment for a real property. This
+       line format is stable across the supported Doris release families. #}
+    {% set visible_property = modules.re.search(
+        '(?im)^[ \t]*"function_column[.]sequence_col"[ \t]*=[ \t]*"([^"\r\n]+)"[ \t]*,?[ \t]*\r?$',
+        create_table
+    ) %}
+    {% set hidden_property = modules.re.search(
+        '(?im)^[ \t]*"function_column[.]sequence_type"[ \t]*=[ \t]*"[^"\r\n]+"[ \t]*,?[ \t]*\r?$',
+        create_table
+    ) %}
+    {% set configured_sequence = doris__sequence_column_from_properties() %}
+    {% set physical_sequence = (
+        visible_property.group(1)
+        if visible_property is not none
+        else none
+    ) %}
+
+    {% if hidden_property is not none %}
+        {% if strategy == 'merge' %}
+            {% set message -%}
+Doris incremental strategy '{{ strategy }}' cannot safely write {{ target_relation }}
+because the existing table uses physical property
+'function_column.sequence_type' and the hidden __DORIS_SEQUENCE_COL__. Rebuild
+the model with a visible 'function_column.sequence_col' mapping:
+
+    dbt run --full-refresh --select {{ model.name }}
+            {%- endset %}
+        {% else %}
+            {% set message -%}
+Doris incremental strategy '{{ strategy }}' cannot safely write {{ target_relation }}
+because the existing table uses physical property
+'function_column.sequence_type' and the hidden __DORIS_SEQUENCE_COL__. Rebuild
+this target without hidden Sequence state:
+
+    dbt run --full-refresh --select {{ model.name }}
+
+To retain Sequence ordering, switch the model to strategy 'merge' with a visible
+'function_column.sequence_col' mapping before rebuilding it.
+            {%- endset %}
+        {% endif %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+
+    {% if (
+        strategy == 'merge'
+        and configured_sequence is none
+        and physical_sequence is not none
+    ) %}
+        {% set message -%}
+Doris incremental strategy 'merge' target {{ target_relation }} uses physical
+Sequence mapping column '{{ physical_sequence }}', but model {{ model.unique_id }}
+does not configure 'function_column.sequence_col'. Restore the matching model
+property, or rebuild the table without Sequence mapping using:
+
+    dbt run --full-refresh --select {{ model.name }}
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+
+    {% if strategy == 'merge' and configured_sequence is not none and (
+        physical_sequence is none
+        or configured_sequence | lower != physical_sequence | lower
+    ) %}
+        {% set physical_description = (
+            "no visible Sequence mapping"
+            if physical_sequence is none
+            else "Sequence mapping column '" ~ physical_sequence ~ "'"
+        ) %}
+        {% set message -%}
+Doris incremental strategy 'merge' configured Sequence mapping column
+'{{ configured_sequence }}', but {{ target_relation }} uses
+{{ physical_description }}. An incremental run cannot change this physical table
+property. Rebuild it with:
+
+    dbt run --full-refresh --select {{ model.name }}
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+{% endmacro %}
+
+
 {% macro doris__validate_incremental_target(strategy, target_relation, unique_key) %}
-    {% set table_model = doris__get_table_model(target_relation) %}
+    {% set create_table = doris__show_create_table(
+        target_relation,
+        statement_name='doris_incremental_validate_target'
+    ) %}
+    {% set table_model = doris__table_model_from_create_table(create_table) %}
 
     {% if strategy == 'append' and table_model != 'duplicate' %}
         {% set message -%}
@@ -376,7 +490,7 @@ Doris incremental strategy 'append' requires a DUPLICATE KEY target, but
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
 
-    {% if strategy in ['merge', 'delete+insert'] %}
+    {% if strategy == 'merge' %}
         {% if table_model != 'unique' %}
             {% set message -%}
 Doris incremental strategy '{{ strategy }}' requires a UNIQUE KEY target, but
@@ -406,21 +520,20 @@ Doris incremental strategy '{{ strategy }}' configured unique_key
             {%- endset %}
             {% do exceptions.raise_compiler_error(message) %}
         {% endif %}
+
     {% endif %}
 
-    {% if strategy == 'merge' and not doris__is_mow_unique_model(target_relation) %}
-        {% set message -%}
-Doris incremental strategy 'merge' requires a Merge-on-Write UNIQUE KEY target.
-{{ target_relation }} is not Merge-on-Write. Rebuild it with:
-
-    dbt run --full-refresh --select {{ model.name }}
-        {%- endset %}
-        {% do exceptions.raise_compiler_error(message) %}
+    {% if strategy in ['merge', 'insert_overwrite'] %}
+        {% do doris__validate_incremental_sequence_mapping(
+            create_table,
+            target_relation,
+            strategy
+        ) %}
     {% endif %}
 {% endmacro %}
 
 
-{# Backwards-compatible helpers retained for packages that called them directly. #}
+{# Backwards-compatible insert helper retained for packages that called it directly. #}
 {% macro tmp_insert(tmp_relation, target_relation, unique_key=none, statement_name='main') %}
     {% set dest_columns = adapter.get_columns_in_relation(target_relation) %}
     {% set arg_dict = {
@@ -431,19 +544,6 @@ Doris incremental strategy 'merge' requires a Merge-on-Write UNIQUE KEY target.
     insert into {{ target_relation }}
         ({{ doris__incremental_dest_columns_csv(dest_columns) }})
     {{ doris__incremental_source_select(arg_dict) }}
-{% endmacro %}
-
-
-{% macro tmp_delete(tmp_relation, target_relation, unique_key=none, statement_name='pre_main') %}
-    {% set keys = doris__normalize_unique_key(unique_key) %}
-    delete from {{ target_relation }} DBT_INTERNAL_DEST
-    using {{ tmp_relation }} DBT_INTERNAL_SOURCE
-    where
-        {% for key in keys %}
-        DBT_INTERNAL_DEST.{{ adapter.quote(key) }}
-            <=> DBT_INTERNAL_SOURCE.{{ adapter.quote(key) }}
-            {% if not loop.last %}and{% endif %}
-        {% endfor %}
 {% endmacro %}
 
 

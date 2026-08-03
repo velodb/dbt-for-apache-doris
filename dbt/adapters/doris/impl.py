@@ -21,7 +21,6 @@
 from dbt.adapters.sql import SQLAdapter
 
 from enum import Enum
-import re
 import time
 from typing import (
     Any,
@@ -77,69 +76,34 @@ class DorisAdapter(SQLAdapter):
     Column = DorisColumn
 
     def valid_incremental_strategies(self):
-        """Return the dbt built-in strategies implemented by dbt-doris."""
-        return ["append", "merge", "delete+insert", "insert_overwrite"]
+        """Return the built-in incremental strategies implemented by dbt-doris."""
+        return ["append", "merge", "insert_overwrite"]
 
-    @staticmethod
-    def _parse_doris_version(version_string):
-        if not version_string:
-            return None
+    def expand_column_types(self, goal, current):
+        """Widen string columns using Doris's case-insensitive name rules."""
+        reference_columns = {
+            column.name.casefold(): column
+            for column in self.get_columns_in_relation(goal)
+        }
+        target_columns = {
+            column.name.casefold(): column
+            for column in self.get_columns_in_relation(current)
+        }
 
-        match = re.search(
-            r"(?:doris\s+version\s+)?doris-"
-            r"(\d+)\.(\d+)(?:\.(\d+))?",
-            str(version_string),
-            flags=re.IGNORECASE,
-        )
-        if match is None:
-            return None
-
-        return tuple(int(part or 0) for part in match.groups())
-
-    def _doris_version(self):
-        _, variables = self.execute(
-            "show variables like 'version_comment'",
-            auto_begin=False,
-            fetch=True,
-        )
-        if len(variables.rows) > 0:
-            version = self._parse_doris_version(variables.rows[0][1])
-            if version is not None and version != (0, 0, 0):
-                return version
-
-        # Source/custom builds may omit a usable version from version_comment.
-        _, frontends = self.execute(
-            "show frontends",
-            auto_begin=False,
-            fetch=True,
-        )
-        version_index = list(frontends.column_names).index("Version")
-        connected_index = (
-            list(frontends.column_names).index("CurrentConnected")
-            if "CurrentConnected" in frontends.column_names
-            else None
-        )
-        rows = list(frontends.rows)
-        if connected_index is not None:
-            connected_rows = [
-                row
-                for row in rows
-                if str(row[connected_index]).lower() in ("yes", "true")
-            ]
-            if connected_rows:
-                rows = connected_rows
-
-        for row in rows:
-            version = self._parse_doris_version(row[version_index])
-            if version is not None and version != (0, 0, 0):
-                return version
-        return None
-
-    @available
-    def supports_transactional_delete_insert(self):
-        """Whether Doris supports DELETE and INSERT SELECT in one transaction."""
-        version = self._doris_version()
-        return version is not None and version >= (3, 0, 0)
+        for normalized_name, reference_column in reference_columns.items():
+            target_column = target_columns.get(normalized_name)
+            if (
+                target_column is not None
+                and target_column.can_expand_to(reference_column)
+            ):
+                new_type = self.Column.string_type(
+                    reference_column.string_size()
+                )
+                self.alter_column_type(
+                    current,
+                    target_column.name,
+                    new_type,
+                )
 
     def _latest_schema_change_job(self, relation: BaseRelation):
         schema = self.quote(relation.schema)
@@ -180,7 +144,16 @@ class DorisAdapter(SQLAdapter):
         while True:
             job = self._latest_schema_change_job(relation)
             if job is None or job["job_id"] == previous_job_id:
-                return
+                if time.monotonic() >= deadline:
+                    raise dbt.exceptions.DbtRuntimeError(
+                        "Timed out after {} seconds waiting for a new Doris "
+                        "schema change job on {}".format(
+                            timeout_seconds,
+                            relation,
+                        )
+                    )
+                time.sleep(0.2)
+                continue
             if job["state"] == "FINISHED":
                 return
             if job["state"] == "CANCELLED":

@@ -51,7 +51,7 @@
       {%- endif -%}
     DUPLICATE KEY (
       {% for item in cols %}
-        {{ item }}
+        {{ adapter.quote(item) }}
       {% if not loop.last %},{% endif %}
       {% endfor %}
     )
@@ -73,7 +73,7 @@
 
     UNIQUE KEY (
       {% for item in cols %}
-        {{ item }}
+        {{ adapter.quote(item) }}
       {% if not loop.last %},{% endif %}
       {% endfor %}
     )
@@ -93,7 +93,7 @@
       {%- endif -%}
     DISTRIBUTED BY HASH (
       {% for item in cols %}
-        {{ item }}{% if not loop.last %},{% endif %}
+        {{ adapter.quote(item) }}{% if not loop.last %},{% endif %}
       {% endfor %}
     ) BUCKETS {{ config.get('buckets', validator=validation.any[int]) or 10 }}
   {% endif %}
@@ -165,6 +165,52 @@
     ) %}
   {% endif %}
   {{ return(parts[1] | trim | trim(';')) }}
+{%- endmacro %}
+
+
+{% macro doris__snapshot_view_data_to_table(
+    from_relation,
+    to_relation
+) -%}
+  {% if not from_relation.is_view or to_relation.type != 'table' %}
+    {% do exceptions.raise_compiler_error(
+        "Doris View recovery requires a View source and Table destination."
+    ) %}
+  {% endif %}
+  {% if (
+      from_relation.schema == to_relation.schema
+      and from_relation.identifier == to_relation.identifier
+  ) %}
+    {% do exceptions.raise_compiler_error(
+        "Doris View recovery source and destination must be different relations."
+    ) %}
+  {% endif %}
+
+  {# Evaluate the existing View before the replacement model can change the
+     session. Doris 2.1 can apply the current session's SQL mode while reading
+     a View, and SHOW CREATE VIEW does not expose enough state to replay the
+     View definition portably. #}
+  {% set existing_destination = load_cached_relation(to_relation) %}
+  {% if existing_destination is not none %}
+    {% do exceptions.raise_compiler_error(
+        "Doris View recovery destination must not already exist: "
+        ~ to_relation
+    ) %}
+  {% endif %}
+  {% do run_query(doris__create_view_snapshot_table(
+      to_relation,
+      from_relation
+  )) %}
+  {% do adapter.cache_added(to_relation) %}
+{%- endmacro %}
+
+
+{% macro doris__snapshot_view_to_table(
+    from_relation,
+    to_relation
+) -%}
+  {% do doris__snapshot_view_data_to_table(from_relation, to_relation) %}
+  {% do adapter.drop_relation(from_relation) %}
 {%- endmacro %}
 
 {% macro doris__rename_relation(from_relation, to_relation) -%}
@@ -250,7 +296,9 @@
 {% endmacro %}
 
 {% macro drop_relation_if_exists(relation) %}
-  {{ doris__drop_relation(relation) }}
+  {% if relation is not none %}
+    {% do adapter.drop_relation(relation) %}
+  {% endif %}
 {% endmacro %}
 
 {% macro create_indexes(relation) -%}

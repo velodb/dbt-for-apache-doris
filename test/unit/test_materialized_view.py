@@ -783,6 +783,10 @@ def test_table_materialization_does_not_exchange_with_an_existing_mv():
 
     class Adapter:
         @staticmethod
+        def quote(identifier):
+            return f"`{identifier}`"
+
+        @staticmethod
         def drop_relation(relation):
             events.append(("drop", relation))
 
