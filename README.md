@@ -58,10 +58,12 @@ The adapter contains Doris implementations for table, view, incremental,
 partition, snapshot, seed, and asynchronous materialized-view workflows.
 Ephemeral models are compiled by dbt Core.
 
-Incremental models support `append`, `merge`, and native `insert_overwrite`.
-`delete+insert` is rejected; use a Doris Unique Key target with `merge` for
-upsert semantics. Configuration, generated Doris SQL, staging behavior,
-migration notes, and the validation matrix are documented in
+Incremental models support `append`, `merge`, native `insert_overwrite`, and
+dbt Core 1.12 `microbatch`. Microbatch replaces each exact Doris time partition
+with a named `INSERT OVERWRITE`, including empty batches. `delete+insert` is
+rejected; use a Doris Unique Key target with `merge` for upsert semantics.
+Configuration, generated Doris SQL, staging behavior, migration notes, and the
+validation matrix are documented in
 [Incremental user guide](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental.zh-CN.md)
 and [Incremental test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md).
 

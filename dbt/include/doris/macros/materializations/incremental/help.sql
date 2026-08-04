@@ -62,6 +62,507 @@
 {% endmacro %}
 
 
+{% macro doris__incremental_config_property(property_name) %}
+    {% set values = [] %}
+    {% set properties = config.get('properties', none) or {} %}
+    {% for configured_name, configured_value in properties.items() %}
+        {% if configured_name | string | lower == property_name | lower %}
+            {% do values.append(configured_value) %}
+        {% endif %}
+    {% endfor %}
+    {% if values %}
+        {{ return(values[0]) }}
+    {% endif %}
+    {{ return(none) }}
+{% endmacro %}
+
+
+{% macro doris__microbatch_uses_dynamic_partitions() %}
+    {% set enabled = doris__incremental_config_property(
+        'dynamic_partition.enable'
+    ) %}
+    {{ return(enabled | string | lower == 'true') }}
+{% endmacro %}
+
+
+{% macro doris__show_create_property_value(create_table, property_name) %}
+    {% set property = modules.re.search(
+        '(?im)^[ \\t]*"' ~ modules.re.escape(property_name)
+        ~ '"[ \\t]*=[ \\t]*"([^"\\r\\n]*)"[ \\t]*,?[ \\t]*\\r?$',
+        create_table
+    ) %}
+    {% if property is not none %}
+        {{ return(property.group(1)) }}
+    {% endif %}
+    {{ return(none) }}
+{% endmacro %}
+
+
+{% macro doris__validate_microbatch_target_properties(
+    create_table,
+    target_relation
+) %}
+    {% set configured_dynamic = doris__microbatch_uses_dynamic_partitions() %}
+    {% set physical_enable = doris__show_create_property_value(
+        create_table,
+        'dynamic_partition.enable'
+    ) %}
+    {% set physical_dynamic = physical_enable | string | lower == 'true' %}
+    {% if configured_dynamic != physical_dynamic %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch model " ~ model.unique_id ~ " configures "
+            ~ ("Dynamic Partition" if configured_dynamic else "static partitions")
+            ~ ", but existing target " ~ target_relation ~ " uses "
+            ~ ("Dynamic Partition" if physical_dynamic else "static partitions")
+            ~ ". Align the physical table or run --full-refresh."
+        ) %}
+    {% endif %}
+    {% if not configured_dynamic %}
+        {{ return(none) }}
+    {% endif %}
+
+    {% set property_names = [
+        'dynamic_partition.time_unit',
+        'dynamic_partition.prefix',
+        'dynamic_partition.end',
+        'dynamic_partition.create_history_partition'
+    ] %}
+    {% set mismatches = [] %}
+    {% for property_name in property_names %}
+        {% set configured_value = doris__incremental_config_property(
+            property_name
+        ) %}
+        {% set physical_value = doris__show_create_property_value(
+            create_table,
+            property_name
+        ) %}
+        {% if configured_value | string | lower != physical_value | string | lower %}
+            {% do mismatches.append(property_name) %}
+        {% endif %}
+    {% endfor %}
+
+    {% set configured_timezone = doris__incremental_config_property(
+        'dynamic_partition.time_zone'
+    ) | string | lower %}
+    {% set physical_timezone = doris__show_create_property_value(
+        create_table,
+        'dynamic_partition.time_zone'
+    ) | string | lower %}
+    {% set utc_timezones = ['utc', 'etc/utc', '+00:00'] %}
+    {% if (
+        configured_timezone not in utc_timezones
+        or physical_timezone not in utc_timezones
+    ) %}
+        {% do mismatches.append('dynamic_partition.time_zone') %}
+    {% endif %}
+
+    {% for property_name in [
+        'dynamic_partition.start',
+        'dynamic_partition.history_partition_num',
+        'dynamic_partition.start_day_of_month'
+    ] %}
+        {% set configured_value = doris__incremental_config_property(
+            property_name
+        ) %}
+        {% if configured_value is not none %}
+            {% set physical_value = doris__show_create_property_value(
+                create_table,
+                property_name
+            ) %}
+            {% if configured_value | string != physical_value | string %}
+                {% do mismatches.append(property_name) %}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+
+    {% if mismatches %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch Dynamic Partition properties on existing target "
+            ~ target_relation ~ " do not match model " ~ model.unique_id
+            ~ ": " ~ (mismatches | unique | list | string)
+            ~ ". Align the physical properties or run --full-refresh."
+        ) %}
+    {% endif %}
+{% endmacro %}
+
+
+{% macro doris__microbatch_context() %}
+    {% set batch = model.get('batch', none) %}
+    {% if batch is none %}
+        {% do exceptions.raise_compiler_error(
+            "Doris incremental strategy 'microbatch' requires dbt Core's "
+            ~ "batched execution context model.batch on " ~ model.unique_id
+            ~ ". Use dbt Core 1.12.x and run the model through dbt run."
+        ) %}
+    {% endif %}
+    {% if (
+        batch.get('id', none) is none
+        or batch.get('event_time_start', none) is none
+        or batch.get('event_time_end', none) is none
+    ) %}
+        {% do exceptions.raise_compiler_error(
+            "Incomplete model.batch context for Doris microbatch model "
+            ~ model.unique_id ~ "."
+        ) %}
+    {% endif %}
+    {{ return(batch) }}
+{% endmacro %}
+
+
+{% macro doris__microbatch_generated_partition_name() %}
+    {% set batch = doris__microbatch_context() %}
+    {% set partition_name = 'dbt_mb_' ~ batch['id'] | replace('T', '') %}
+    {% if not modules.re.fullmatch(
+        '[A-Za-z_][A-Za-z0-9_]*',
+        partition_name
+    ) %}
+        {% do exceptions.raise_compiler_error(
+            "Could not generate a safe Doris partition name from model.batch.id "
+            ~ "'" ~ batch['id'] ~ "' on " ~ model.unique_id ~ "."
+        ) %}
+    {% endif %}
+    {{ return(partition_name) }}
+{% endmacro %}
+
+
+{% macro doris__microbatch_partition_by_clause() %}
+    {% set batch = doris__microbatch_context() %}
+    {% set partition_name = doris__microbatch_generated_partition_name() %}
+    {% set event_time = config.get('event_time') %}
+    {% set start = batch['event_time_start'].strftime('%Y-%m-%d %H:%M:%S') %}
+    {% set end = batch['event_time_end'].strftime('%Y-%m-%d %H:%M:%S') %}
+    {% set clause -%}
+PARTITION BY RANGE ({{ adapter.quote(event_time) }}) (
+    PARTITION {{ adapter.quote(partition_name) }}
+    VALUES [("{{ start }}"), ("{{ end }}"))
+)
+    {%- endset %}
+    {{ return(clause) }}
+{% endmacro %}
+
+
+{% macro doris__add_microbatch_partition_sql(target_relation) %}
+    {% set batch = doris__microbatch_context() %}
+    {% set partition_name = doris__microbatch_generated_partition_name() %}
+    {% set start = batch['event_time_start'].strftime('%Y-%m-%d %H:%M:%S') %}
+    {% set end = batch['event_time_end'].strftime('%Y-%m-%d %H:%M:%S') %}
+    {% set add_sql -%}
+alter table {{ target_relation }}
+add partition {{ adapter.quote(partition_name) }}
+values [("{{ start }}"), ("{{ end }}"))
+    {%- endset %}
+    {{ return(add_sql) }}
+{% endmacro %}
+
+
+{% macro doris__validate_microbatch_config(unique_key) %}
+    {% set batch = doris__microbatch_context() %}
+    {% set batch_size = config.get('batch_size', none) | string | lower %}
+    {% set valid_batch_ids = {
+        'hour': '[0-9]{8}T[0-9]{2}',
+        'day': '[0-9]{8}',
+        'month': '[0-9]{6}',
+        'year': '[0-9]{4}'
+    } %}
+    {% if (
+        batch_size not in valid_batch_ids
+        or not modules.re.fullmatch(valid_batch_ids[batch_size], batch['id'])
+    ) %}
+        {% do exceptions.raise_compiler_error(
+            "Invalid dbt Core model.batch.id '" ~ batch['id']
+            ~ "' for batch_size='" ~ batch_size ~ "' on " ~ model.unique_id
+            ~ ". dbt-doris supports Core 1.12.x batch identifiers."
+        ) %}
+    {% endif %}
+
+    {% if doris__normalize_unique_key(unique_key) %}
+        {% do exceptions.raise_compiler_error(
+            "Doris incremental strategy 'microbatch' cannot be combined "
+            ~ "with 'unique_key' on model " ~ model.unique_id
+            ~ ". Microbatch replaces one complete time partition; use a "
+            ~ "DUPLICATE KEY target instead."
+        ) %}
+    {% endif %}
+    {% if config.get('overwrite_partitions', none) is not none %}
+        {% do exceptions.raise_compiler_error(
+            "Do not configure 'overwrite_partitions' for Doris microbatch "
+            ~ "model " ~ model.unique_id ~ ". The adapter resolves the one "
+            ~ "exact physical partition for each dbt batch."
+        ) %}
+    {% endif %}
+    {% if config.get('partition_by_init', none) is not none %}
+        {% do exceptions.raise_compiler_error(
+            "Do not configure 'partition_by_init' for Doris microbatch model "
+            ~ model.unique_id ~ ". The adapter creates the initial exact "
+            ~ "[event_time_start, event_time_end) partition from model.batch."
+        ) %}
+    {% endif %}
+
+    {% set event_time = config.get('event_time', none) %}
+    {% if (
+        event_time is not string
+        or not modules.re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', event_time)
+    ) %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch model " ~ model.unique_id
+            ~ " requires 'event_time' to name one unquoted model column."
+        ) %}
+    {% endif %}
+
+    {% set partition_by = config.get('partition_by', none) %}
+    {% if partition_by is string %}
+        {% set partition_columns = [partition_by] %}
+    {% elif partition_by is none %}
+        {% set partition_columns = [] %}
+    {% else %}
+        {% set partition_columns = partition_by | list %}
+    {% endif %}
+    {% if not partition_columns %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch model " ~ model.unique_id
+            ~ " requires 'partition_by' on its event_time column."
+        ) %}
+    {% endif %}
+    {% if (
+        partition_columns | length != 1
+        or partition_columns[0] | lower != event_time | lower
+    ) %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch 'partition_by' and 'event_time' must name the "
+            ~ "same column on model " ~ model.unique_id ~ "."
+        ) %}
+    {% endif %}
+    {% if config.get('partition_type', 'RANGE') | upper != 'RANGE' %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch requires a single-column RANGE partition on "
+            ~ model.unique_id ~ "."
+        ) %}
+    {% endif %}
+
+    {% if doris__microbatch_uses_dynamic_partitions() %}
+        {% set dynamic_unit = doris__incremental_config_property(
+            'dynamic_partition.time_unit'
+        ) %}
+        {% if dynamic_unit | string | lower != batch_size %}
+            {% do exceptions.raise_compiler_error(
+                "Doris dynamic_partition.time_unit must equal dbt batch_size "
+                ~ "on microbatch model " ~ model.unique_id ~ "."
+            ) %}
+        {% endif %}
+        {% set dynamic_timezone = doris__incremental_config_property(
+            'dynamic_partition.time_zone'
+        ) %}
+        {% set normalized_timezone = dynamic_timezone | string | lower %}
+        {% if normalized_timezone not in ['utc', 'etc/utc', '+00:00'] %}
+            {% do exceptions.raise_compiler_error(
+                "Doris microbatch dynamic_partition.time_zone must be UTC on "
+                ~ model.unique_id ~ " because dbt Core builds batch boundaries "
+                ~ "in UTC."
+            ) %}
+        {% endif %}
+        {% set create_history = doris__incremental_config_property(
+            'dynamic_partition.create_history_partition'
+        ) %}
+        {% if create_history | string | lower != 'true' %}
+            {% do exceptions.raise_compiler_error(
+                "Doris microbatch model " ~ model.unique_id ~ " requires "
+                ~ "dynamic_partition.create_history_partition='true'. Set "
+                ~ "dynamic_partition.start far enough back to cover begin and "
+                ~ "every requested backfill batch."
+            ) %}
+        {% endif %}
+        {% set dynamic_prefix = doris__incremental_config_property(
+            'dynamic_partition.prefix'
+        ) %}
+        {% if (
+            dynamic_prefix is not string
+            or not modules.re.fullmatch(
+                '[A-Za-z_][A-Za-z0-9_]*',
+                dynamic_prefix
+            )
+        ) %}
+            {% do exceptions.raise_compiler_error(
+                "Doris microbatch model " ~ model.unique_id
+                ~ " requires a safe dynamic_partition.prefix."
+            ) %}
+        {% endif %}
+        {% set dynamic_end = doris__incremental_config_property(
+            'dynamic_partition.end'
+        ) %}
+        {% if not modules.re.fullmatch('[1-9][0-9]*', dynamic_end | string) %}
+            {% do exceptions.raise_compiler_error(
+                "Doris microbatch model " ~ model.unique_id ~ " requires a "
+                ~ "positive integer dynamic_partition.end."
+            ) %}
+        {% endif %}
+        {% set dynamic_start = doris__incremental_config_property(
+            'dynamic_partition.start'
+        ) %}
+        {% set history_count = doris__incremental_config_property(
+            'dynamic_partition.history_partition_num'
+        ) %}
+        {% if dynamic_start is none and history_count is none %}
+            {% do exceptions.raise_compiler_error(
+                "Doris microbatch model " ~ model.unique_id
+                ~ " must configure dynamic_partition.start or "
+                ~ "history_partition_num far enough back to cover begin and "
+                ~ "requested backfills."
+            ) %}
+        {% endif %}
+        {% if batch_size == 'month' %}
+            {% set month_start = doris__incremental_config_property(
+                'dynamic_partition.start_day_of_month'
+            ) %}
+            {% if month_start is not none and month_start | string != '1' %}
+                {% do exceptions.raise_compiler_error(
+                    "Doris monthly microbatch partitions must start on day 1 "
+                    ~ "on model " ~ model.unique_id ~ "."
+                ) %}
+            {% endif %}
+        {% endif %}
+    {% endif %}
+{% endmacro %}
+
+
+{% macro doris__normalized_microbatch_boundary(boundary) %}
+    {% set normalized = boundary | string | trim | replace('T', ' ') %}
+    {% set normalized = modules.re.sub('[.]0+$', '', normalized) %}
+    {% if modules.re.fullmatch('[0-9]{4}-[0-9]{2}-[0-9]{2}', normalized) %}
+        {% set normalized = normalized ~ ' 00:00:00' %}
+    {% endif %}
+    {{ return(normalized) }}
+{% endmacro %}
+
+
+{% macro doris__microbatch_partition_from_rows(
+    rows,
+    target_relation,
+    allow_missing=false
+) %}
+    {% set batch = doris__microbatch_context() %}
+    {% set event_time = config.get('event_time') | lower %}
+    {% set expected_start = batch['event_time_start'].strftime(
+        '%Y-%m-%d %H:%M:%S'
+    ) %}
+    {% set expected_end = batch['event_time_end'].strftime(
+        '%Y-%m-%d %H:%M:%S'
+    ) %}
+    {% set exact_partitions = [] %}
+    {% set overlapping_partitions = [] %}
+    {% set unparsed_partitions = [] %}
+    {% set physical_expressions = [] %}
+
+    {% for row in rows %}
+        {% set partition_method = row[1] | string | upper %}
+        {% set partition_expression = (
+            row[2] | string | trim | replace('`', '') | lower
+        ) %}
+        {% set description = row[3] | string | trim %}
+        {% set boundaries = modules.re.fullmatch(
+            "\\[\\('([^']+)'\\),\\s*\\('([^']+)'\\)\\)",
+            description
+        ) %}
+        {% if partition_method == 'RANGE' %}
+            {% if partition_expression not in physical_expressions %}
+                {% do physical_expressions.append(partition_expression) %}
+            {% endif %}
+            {% if partition_expression == event_time %}
+                {% if boundaries is none %}
+                    {% do unparsed_partitions.append(row[0]) %}
+                {% else %}
+                    {% set physical_start = (
+                        doris__normalized_microbatch_boundary(
+                            boundaries.group(1)
+                        )
+                    ) %}
+                    {% set physical_end = (
+                        doris__normalized_microbatch_boundary(
+                            boundaries.group(2)
+                        )
+                    ) %}
+                    {% if (
+                        physical_start == expected_start
+                        and physical_end == expected_end
+                    ) %}
+                        {% do exact_partitions.append(row[0]) %}
+                    {% elif (
+                        physical_start < expected_end
+                        and physical_end > expected_start
+                    ) %}
+                        {% do overlapping_partitions.append(row[0]) %}
+                    {% endif %}
+                {% endif %}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+
+    {% if physical_expressions != [event_time] %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch target " ~ target_relation
+            ~ " must use one plain RANGE partition expression on event_time "
+            ~ "column '" ~ config.get('event_time') ~ "', but found "
+            ~ (physical_expressions | string) ~ "."
+        ) %}
+    {% endif %}
+    {% if exact_partitions | length > 1 %}
+        {% set message -%}
+Doris microbatch target {{ target_relation }} must have exactly one existing
+single-column RANGE partition on '{{ config.get('event_time') }}' for
+[{{ expected_start }}, {{ expected_end }}). Found {{ exact_partitions | length }}
+exact range partitions.
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+    {% if exact_partitions | length == 1 %}
+        {{ return(exact_partitions[0]) }}
+    {% endif %}
+    {% if overlapping_partitions or unparsed_partitions %}
+        {% do exceptions.raise_compiler_error(
+            "Doris microbatch target " ~ target_relation ~ " has no exact "
+            ~ "range partition for [" ~ expected_start ~ ", " ~ expected_end
+            ~ ") and cannot safely create one because overlapping or "
+            ~ "unparseable partitions exist: "
+            ~ ((overlapping_partitions + unparsed_partitions) | string) ~ "."
+        ) %}
+    {% endif %}
+    {% if allow_missing %}
+        {{ return(none) }}
+    {% endif %}
+    {% set message -%}
+Doris microbatch target {{ target_relation }} has no exact range partition on
+'{{ config.get('event_time') }}' for [{{ expected_start }}, {{ expected_end }}).
+Dynamic Partition is enabled, so dbt-doris cannot add it manually. Extend the
+dynamic partition history window before retrying this batch.
+    {%- endset %}
+    {% do exceptions.raise_compiler_error(message) %}
+{% endmacro %}
+
+
+{% macro doris__resolve_microbatch_partition(
+    target_relation,
+    allow_missing=false
+) %}
+    {% call statement('doris_incremental_microbatch_partition', fetch_result=True) %}
+        select partition_name,
+               partition_method,
+               partition_expression,
+               partition_description
+        from information_schema.partitions
+        where table_schema = '{{ target_relation.schema | replace("'", "''") }}'
+          and table_name = '{{ target_relation.identifier | replace("'", "''") }}'
+          and partition_name is not null
+    {% endcall %}
+    {% set rows = load_result(
+        'doris_incremental_microbatch_partition'
+    )['data'] %}
+    {{ return(doris__microbatch_partition_from_rows(
+        rows,
+        target_relation,
+        allow_missing
+    )) }}
+{% endmacro %}
+
+
 {% macro doris__normalized_column_names(columns) %}
     {% set names = [] %}
     {% for column in columns %}
@@ -490,6 +991,23 @@ Doris incremental strategy 'append' requires a DUPLICATE KEY target, but
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
 
+    {% if strategy == 'microbatch' and table_model != 'duplicate' %}
+        {% set message -%}
+Doris incremental strategy 'microbatch' requires a DUPLICATE KEY target, but
+{{ target_relation }} is {{ table_model | upper }}. Rebuild the model with:
+
+    dbt run --full-refresh --select {{ model.name }}
+        {%- endset %}
+        {% do exceptions.raise_compiler_error(message) %}
+    {% endif %}
+
+    {% if strategy == 'microbatch' %}
+        {% do doris__validate_microbatch_target_properties(
+            create_table,
+            target_relation
+        ) %}
+    {% endif %}
+
     {% if strategy == 'merge' %}
         {% if table_model != 'unique' %}
             {% set message -%}
@@ -530,6 +1048,14 @@ Doris incremental strategy '{{ strategy }}' configured unique_key
             strategy
         ) %}
     {% endif %}
+
+    {% if strategy == 'microbatch' %}
+        {{ return(doris__resolve_microbatch_partition(
+            target_relation,
+            allow_missing=not doris__microbatch_uses_dynamic_partitions()
+        )) }}
+    {% endif %}
+    {{ return(none) }}
 {% endmacro %}
 
 

@@ -22,6 +22,7 @@
 
 import inspect
 
+from dbt.adapters.capability import Capability
 from dbt.adapters.doris.impl import DorisAdapter
 
 
@@ -41,7 +42,12 @@ def test_incremental_strategy_allowlist_excludes_delete_insert():
         "append",
         "merge",
         "insert_overwrite",
+        "microbatch",
     ]
+
+
+def test_microbatch_batches_remain_sequential():
+    assert not DorisAdapter.supports(Capability.MicrobatchConcurrency)
 
 
 def test_quoted_contract_column_renders_without_an_adapter_instance():

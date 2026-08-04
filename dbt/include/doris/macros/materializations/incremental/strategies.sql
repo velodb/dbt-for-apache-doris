@@ -22,9 +22,9 @@
       source_sql               compiled model SQL for a direct, single DML
       temp_relation_exists     whether temp_relation is a named source
 
-    append, merge and insert_overwrite may inline source_sql. The materialization
-    can instead provide a logical schema view or a frozen physical stage through
-    the same contract.
+    append, merge, insert_overwrite and microbatch may inline source_sql. The
+    materialization can instead provide a logical schema view or a frozen
+    physical stage through the same contract.
 #}
 
 {% macro doris__get_incremental_default_sql(arg_dict) %}
@@ -70,4 +70,20 @@
         {{ partition_clause }}
         ({{ doris__incremental_dest_columns_csv(dest_columns) }})
     {{ doris__incremental_source_select(arg_dict) }}
+{% endmacro %}
+
+
+{% macro doris__get_incremental_microbatch_sql(arg_dict) %}
+    {# Resolve one exact physical RANGE partition before overwriting it. Unlike
+       PARTITION(*), a named partition is replaced even when this batch emits
+       zero rows, which gives dbt Microbatch its full-batch replacement
+       semantics. #}
+    {% set partition = arg_dict.get('microbatch_partition', none) %}
+    {% if partition is none %}
+        {% set partition = doris__resolve_microbatch_partition(
+            arg_dict['target_relation']
+        ) %}
+    {% endif %}
+    {% do arg_dict.update({'overwrite_partitions': [partition]}) %}
+    {{ return(doris__get_incremental_insert_overwrite_sql(arg_dict)) }}
 {% endmacro %}

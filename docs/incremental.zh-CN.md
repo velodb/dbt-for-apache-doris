@@ -7,16 +7,17 @@
 发布验证、SQL 次数判定和失败注入清单见
 [Incremental 测试方案](incremental-test-plan.zh-CN.md)。
 
-dbt-doris 内置支持三种 Incremental 策略：`append`、`merge` 和
-`insert_overwrite`。已有目标表且 `on_schema_change='ignore'` 时，这三种
-策略都只执行一条最终 DML，不会先把同一批数据写入物理临时表。
+dbt-doris 内置支持四种 Incremental 策略：`append`、`merge`、
+`insert_overwrite` 和 `microbatch`。已有目标表且
+`on_schema_change='ignore'` 时，每个普通增量批次都只执行一条最终 DML，
+不会先把同一批数据写入物理临时表。
 
 ## 源候选已验证版本（PR #2 待复验）
 
 以下五个 Doris 官方发行版本已经在同一份干净源实现候选上完成真实集群验证。
-本实现选择性移入 PR #2 时排除了独立的 Grants/MV 改动；移植工作树已通过
-252 项 Unit 和 40 项本地 Doris Incremental Functional，但正式发布前仍应在
-PR Head 上重跑下表矩阵，不能把源提交日志当作新提交产生的日志：
+本实现选择性移入 PR #2 时排除了独立的 Grants/MV 改动；加入 Microbatch 前的
+移植工作树曾通过 252 项 Unit 和 40 项本地 Doris Incremental Functional，但
+正式发布前仍应在 PR Head 上重跑下表矩阵，不能把源提交日志当作新提交产生的日志：
 
 | Doris | FE/BE 完整 Version | 完整 Functional | 聚焦 Incremental | 状态 |
 | --- | --- | --- | --- | --- |
@@ -24,7 +25,7 @@ PR Head 上重跑下表矩阵，不能把源提交日志当作新提交产生的
 | 3.0.8 | `doris-3.0.8-rc01-09b0cc49a6` | 98 passed / 106 warnings / 143.87s | 36 passed / 27 warnings / 52.49s | 源候选通过；PR #2 待复验 |
 | 3.1.4 | `doris-3.1.4-rc02-7f5ba43de6` | 98 passed / 106 warnings / 150.81s | 36 passed / 27 warnings / 43.94s | 源候选通过；PR #2 待复验 |
 | 4.0.7 | `doris-4.0.7-rc02-35854e7e92a` | 98 passed / 106 warnings / 138.82s | 36 passed / 27 warnings / 39.69s | 源候选通过；PR #2 待复验 |
-| 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 98 passed / 106 warnings / 135.13s | 36 passed / 27 warnings / 39.48s | 源候选通过；PR #2 待复验 |
+| 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 98 passed / 106 warnings / 135.13s | 36 passed / 27 warnings / 39.48s | 源候选通过；dirty PR Head Microbatch 聚焦通过；完整复验待运行 |
 
 五个版本都覆盖 `append`、MOW/MOR `merge`、可见 Sequence 列、整表/静态分区/
 动态分区 `insert_overwrite`、Schema Change、Full Refresh、默认策略路由、现有
@@ -37,6 +38,13 @@ PR #2 在该源候选之后又补了两类保护：Schema Change/自定义策略
 改为 keyless Duplicate + RANDOM/AUTO，以及已有目标的物理 Sequence mapping
 一致性校验。它们已通过 Unit 和本地开发集群 E2E，但尚未进入上表五个官方版本的
 PR Head 复验，不能从源候选结果推导为已通过。
+
+本 PR 后续新增的 `microbatch` 也不在上表历史结果中。它依赖的命名分区
+`INSERT OVERWRITE` SQL 能力覆盖这些目标版本。当前 dirty PR Head 已在 FE/BE
+均为 `doris-0.0.0-ebec9530ba` 的本地开发集群完成 99 项完整 Functional 和 42 项
+聚焦 Incremental，并在带精确版本 Gate 的 Doris 4.1.3 上完成静态分区与 Dynamic
+Partition 两项 Microbatch 聚焦用例。后者不是 4.1.3 的完整 PR Head 矩阵证据；
+五个精确发行版本仍须完整重跑后，才能标记 Microbatch 兼容通过。
 
 验证环境是 dbt Core 1.12.0、dbt-doris 1.0.0、Python 3.12.13；被测 Adapter
 提交为 `7f6d9701140188f347e9f68a25ef9013551e4e48`，`dirty=false`。每份测试日志
@@ -59,6 +67,7 @@ Flake8 与 diff check 通过。
 | `append` | Duplicate Key | `INSERT INTO` | 追加本批全部行 |
 | `merge` | MOW 或 MOR Unique Key | `INSERT INTO` | 按 Unique Key 完整行 Upsert |
 | `insert_overwrite` | 可写 Doris 表 | `INSERT OVERWRITE` | 覆盖整表或指定分区 |
+| `microbatch` | 按 `event_time` 单列 RANGE 分区的 Duplicate Key 表 | 命名分区 `INSERT OVERWRITE` | 按 dbt Core 时间窗口完整替换一个精确分区 |
 
 没有显式配置 `incremental_strategy` 时：
 
@@ -66,7 +75,7 @@ Flake8 与 diff check 通过。
 - 没有 `unique_key`：使用 `append`。
 
 `delete+insert` 和 `delete_insert` 均不受支持。需要按 Key 更新或插入时使用
-`merge`。`microbatch` 尚未实现。
+`merge`；需要按时间窗口重算完整分区时使用 `microbatch`。
 
 ## `append`
 
@@ -226,6 +235,122 @@ select id, value, event_date from {{ ref('replacement_data') }}
 静态或动态分区覆盖时，Model 必须返回想保留的**完整分区数据**。覆盖范围内没有
 出现在本批结果中的旧行会被删除。
 
+## `microbatch`
+
+`microbatch` 使用 dbt Core 1.12.x 的批次编排。Core 将时间轴拆成
+`hour`、`day`、`month` 或 `year` 批次，并把配置了 `event_time` 的上游
+`ref()` / `source()` 自动过滤到 UTC 半开区间 `[event_time_start,
+event_time_end)`；dbt-doris 再用一条命名分区 `INSERT OVERWRITE` 完整替换
+目标表中同一精确区间。
+
+一个静态分区的日批模型示例：
+
+```sql
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(2026, 1, 1, 0, 0, 0),
+    duplicate_key=['id', 'event_time'],
+    partition_by=['event_time'],
+    partition_type='RANGE',
+    distributed_by=['id'],
+    properties={'replication_num': '1'}
+) }}
+
+select id, event_time, value
+from {{ ref('source_events') }}
+```
+
+`source_events` 自身也必须配置 `event_time='event_time'`，Core 才能在这个
+`ref()` 上自动注入批次过滤。最终 Model 输出必须是当前批次的完整数据，且所有行
+都落在当前 `[start, end)`；不要再用 `is_incremental()` 自行维护另一套水位。
+
+Microbatch 配置约束如下：
+
+- 仅支持 dbt Core 1.12.x；必须配置 `event_time`、`batch_size`、`begin`、
+  单列 `partition_by` 和 `partition_type='RANGE'`；`partition_by` 必须与
+  `event_time` 是同一个未加引号的普通列名；
+- 目标必须是 Duplicate Key 表。不能配置 `unique_key`、Sequence mapping、
+  `overwrite_partitions`、`partition_by_init`、`predicates` 或
+  `incremental_predicates`；初始精确分区由 Adapter 从 `model.batch` 创建；
+- `lookback` 和命令行 `--event-time-start` / `--event-time-end` 仍由 dbt Core
+  决定要重跑哪些批次；Core 按当前 UTC 时间和配置计算窗口，不读取目标表的
+  `max(event_time)` 水位。每个批次的结果语义相同，都是完整替换；
+- Adapter 不声明 `MicrobatchConcurrency` 能力，因此批次顺序执行；配置
+  `concurrent_batches=true` 也不会让 Doris 批次并行；
+- Core 的边界是 UTC aware datetime，Doris `DATETIME` / `DATETIMEV2` 没有时区。
+  Adapter 会渲染不带 Offset 的 UTC 字面量；模型和上游数据必须把这些值按 UTC
+  naive 时间保存，避免 Session 时区造成批次偏移。
+
+### 静态分区模式（默认）
+
+未配置 `dynamic_partition.enable='true'` 时，dbt-doris 管理每个批次的精确
+RANGE 分区：
+
+1. 首批用 CTAS 建表，并创建
+   `dbt_mb_<Core batch id 去掉 T>`，例如日批 `dbt_mb_20260804`；
+2. 后续批次先读取 `information_schema.partitions`。已有精确 `[start, end)`
+   分区时使用其真实名称，因此既有分区不必遵循 `dbt_mb_` 命名；
+3. 精确分区不存在且与现有分区不重叠时，执行一次
+   `ALTER TABLE ... ADD PARTITION` 创建空分区，再执行一条命名分区
+   `INSERT OVERWRITE`；
+4. 若只找到更粗粒度、重叠或无法安全解析的分区，则在覆盖前失败，避免误删
+   其他批次。
+
+`ADD PARTITION` 只创建分区元数据和空 Tablet，不会运行 Model 查询，不是同批数据
+的第二次物化。`on_schema_change='ignore'` 时，已有目标仍只使用逻辑
+`__dbt_tmp` View 和一条目标 `INSERT OVERWRITE`。静态模式不会自动删除过期
+分区，保留策略由用户管理；如果 ADD 成功后、最终 DML 前失败，可能留下空分区，
+重试会解析并覆盖该分区。
+
+### Doris Dynamic Partition 模式
+
+若希望 Doris 调度器管理分区，可加入：
+
+```python
+properties={
+    'replication_num': '1',
+    'dynamic_partition.enable': 'true',
+    'dynamic_partition.time_unit': 'DAY',
+    'dynamic_partition.time_zone': 'UTC',
+    'dynamic_partition.prefix': 'p',
+    'dynamic_partition.start': '-30',
+    'dynamic_partition.end': '1',
+    'dynamic_partition.create_history_partition': 'true'
+}
+```
+
+其中 `time_unit` 必须等于 `batch_size`，时区必须是 `UTC`、`Etc/UTC` 或
+`+00:00`，`prefix` 必须是安全标识符，`end` 必须是正整数，且
+`create_history_partition='true'`。还必须配置 `start` 或
+`history_partition_num`，并让窗口覆盖 `begin` 和所有回填批次；月批的
+`start_day_of_month` 只能省略或设为 `1`。
+
+已有目标表会校验静态/动态模式不能漂移，并比较 `time_unit`、`prefix`、`end`、
+`create_history_partition`、UTC 时区以及模型显式配置的 `start`、
+`history_partition_num`、`start_day_of_month`。Dynamic Partition 模式下
+Adapter 不执行 `ADD PARTITION`；如果调度器尚未创建当前精确区间，会在 Hook 和
+写入前失败。扩大历史窗口并等待分区生成后再重试。长时间回填还受 Doris 动态
+分区保留窗口和集群分区数量限制；这类场景通常更适合默认的静态模式。
+
+### 为什么不用 `PARTITION(*)`
+
+Doris 的 `INSERT OVERWRITE ... PARTITION(*)` 只替换本批结果实际触达的分区；
+当查询返回 0 行时它是 No-op，会把目标中的旧批次错误地保留下来。Microbatch
+必须支持“空结果也清空整个批次”，所以 Adapter 总是先解析一个精确物理分区名，
+再执行：
+
+```sql
+INSERT OVERWRITE TABLE target PARTITION(`actual_partition_name`) (...)
+SELECT ...;
+```
+
+命名分区在空结果下也会被完整替换。这正是 `microbatch` 与普通
+`insert_overwrite` 的关键差别：用户不指定覆盖分区，Adapter 按 Core 批次边界
+解析并保护覆盖范围。
+
 ## Schema Change
 
 支持 dbt Core 的四种 `on_schema_change`：
@@ -255,8 +380,11 @@ CTAS 创建目标表。
   再向目标写入，确实有两次物理数据写入；`fail` 检测到差异时只有 staging
   CTAS，目标表不会发生第二次写入；
 - 自定义 Incremental 策略：使用物理 staging 保持 dbt 的标准策略参数契约；
-- Full Refresh：先创建 intermediate table，再用 Doris 元数据交换安全替换
-  目标表。数据只写入 intermediate 一次，不会再写最终表一次。
+- 普通策略的 Full Refresh：先创建 intermediate table，再用 Doris 元数据交换
+  安全替换目标表。数据只写入 intermediate 一次，不会再写最终表一次；
+- Microbatch 的首次运行或 Full Refresh：第一个时间批次用 CTAS 创建目标或
+  intermediate 并完成交换，后续每个时间批次各执行一次命名分区
+  `INSERT OVERWRITE`。每份批次数据仍只物化一次，不存在完整数据集的二次 copy。
 
 冻结批次的 staging 是 Adapter 内部的 keyless Duplicate Table，固定使用
 `DISTRIBUTED BY RANDOM BUCKETS AUTO` 和
@@ -304,8 +432,8 @@ Docs、事务内 Post-hook 和 Commit 成功后才清理；事务外 Post-hook �
 SQL Mode 用例必须断言 Pre-model Session 当时实际查询到的数据以及上述 Ordering，
 不能再用 View 的创建模式推导查询结果。
 
-这类 Snapshot 仅用于正向类型切换，不改变普通 `append`、`merge`、
-`insert_overwrite` 的逻辑临时 View + 一条最终 DML 契约。
+这类 Snapshot 仅用于正向类型切换，不改变 `append`、`merge`、
+`insert_overwrite` 或每个 `microbatch` 的逻辑临时 View + 一条最终 DML 契约。
 
 Doris 执行 `INSERT OVERWRITE` 时内部使用的临时分区属于数据库实现细节，
 不等同于 dbt-doris 的物理 staging table。
@@ -339,11 +467,17 @@ Doris 上的 ACID 回滚边界：
 - Post-hook 失败发生在目标 DML 之后，已经写入的目标数据仍然可见。事务内
   Post-hook 失败时逻辑 `__dbt_tmp` View 可能保留；事务外 Post-hook 在 Helper
   清理之后运行；
-- 下一次运行会先清理陈旧 Helper。`merge` 对同一批 Key 的重试可依赖 Unique Key
-  Upsert 收敛；`append` 重试可能产生重复行，`insert_overwrite` 会再次覆盖所选
-  范围。因此 Post-hook 失败后应先确认策略和目标数据，再决定是否原样重跑。
+- 普通策略的下一次运行会先清理同名陈旧 Helper；Microbatch Helper 名含 Batch
+  ID，`dbt retry` 或重跑同一 event-time 窗口会清理同一批的 Helper。若后续窗口
+  已前移，Adapter 不会通配删除其他 Batch ID，以免误删另一 Invocation 正在使用的
+  对象；确认没有活跃运行后，可先精确回填失败批次使其收敛，再检查残留；
+- `merge` 对同一批 Key 的重试可依赖 Unique Key Upsert 收敛；`append` 重试可能
+  产生重复行，`insert_overwrite` 会再次覆盖所选范围；`microbatch` 会再次完整
+  覆盖相同时间分区并收敛。因此 Post-hook 失败后应先确认策略和目标数据，再决定
+  是否原样重跑。
 
-这些状态已经在五个精确 Doris 版本上执行失败注入和成功重试验证。
+前三种策略的这些状态已经在五个精确 Doris 版本上执行失败注入和成功重试验证；
+Microbatch 的正式版本失败矩阵仍待 PR Head 复验。
 
 ## 从旧实现迁移
 
@@ -370,5 +504,5 @@ dbt run --full-refresh --select <model>
 
 - [Incremental 测试方案](incremental-test-plan.zh-CN.md)：精确版本证据、SQL
   次数和失败注入矩阵；
-- `microbatch` 和 Doris 4.1+ 原生 `MERGE INTO` 尚未实现；当前仍使用本文说明的
-  三种策略和跨版本 Unique Key Upsert 路径。
+- Doris 4.1+ 原生 `MERGE INTO` 尚未实现；`merge` 仍使用本文说明的跨版本
+  Unique Key Upsert 路径，`microbatch` 使用命名分区 `INSERT OVERWRITE`。

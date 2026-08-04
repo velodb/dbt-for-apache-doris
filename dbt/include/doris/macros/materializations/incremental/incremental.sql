@@ -70,15 +70,19 @@
   ) %}
   {% set overwrite_partitions = config.get('overwrite_partitions', none) %}
   {% set grant_config = config.get('grants') %}
+  {% set microbatch_partition = none %}
 
   {# Reject an incompatible target before hooks, helper cleanup, staging, DDL,
      or DML so a failed preflight is completely side-effect free. #}
   {% if existing_relation is not none and not full_refresh_mode %}
-      {% do doris__validate_incremental_target(
+      {% set target_validation = doris__validate_incremental_target(
           effective_strategy,
           target_relation,
           unique_key
       ) %}
+      {% if effective_strategy == 'microbatch' %}
+          {% set microbatch_partition = target_validation %}
+      {% endif %}
   {% endif %}
 
   {% set preexisting_temp_relation = load_cached_relation(temp_relation) %}
@@ -161,7 +165,9 @@
          Ordinary built-ins use a logical metadata view, not a physical staging
          table, and finish with one DML statement. #}
       {% set needs_physical_staging = (
-          effective_strategy not in ['append', 'merge', 'insert_overwrite']
+          effective_strategy not in [
+              'append', 'merge', 'insert_overwrite', 'microbatch'
+          ]
           or on_schema_change != 'ignore'
       ) %}
 
@@ -264,6 +270,22 @@
           {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
       {% endif %}
 
+      {# Static Microbatch tables grow one empty exact RANGE partition at a
+         time. Defer this metadata-only DDL until schema validation and schema
+         changes have succeeded. Dynamic Partition tables must pre-create the
+         batch and fail in the read-only preflight when retention omits it. #}
+      {% if (
+          effective_strategy == 'microbatch'
+          and microbatch_partition is none
+      ) %}
+          {% do run_query(
+              doris__add_microbatch_partition_sql(target_relation)
+          ) %}
+          {% set microbatch_partition = (
+              doris__microbatch_generated_partition_name()
+          ) %}
+      {% endif %}
+
       {% set strategy_arg_dict = {
           'target_relation': target_relation,
           'temp_relation': temp_relation,
@@ -272,7 +294,8 @@
           'incremental_predicates': incremental_predicates,
           'source_sql': source_sql,
           'temp_relation_exists': temp_relation_exists,
-          'overwrite_partitions': overwrite_partitions
+          'overwrite_partitions': overwrite_partitions,
+          'microbatch_partition': microbatch_partition
       } %}
       {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
   {% endif %}
@@ -440,6 +463,10 @@
         ) %}
     {% endif %}
 
+    {% if effective_strategy == 'microbatch' %}
+        {% do doris__validate_microbatch_config(unique_key) %}
+    {% endif %}
+
     {% if effective_strategy == 'insert_overwrite' and normalized_unique_key %}
         {% set message -%}
 Incremental strategy 'insert_overwrite' cannot be combined with 'unique_key'
@@ -549,7 +576,8 @@ Config 'overwrite_partitions' is only valid with incremental strategy
     {% if incremental_predicates and effective_strategy in [
         'append',
         'merge',
-        'insert_overwrite'
+        'insert_overwrite',
+        'microbatch'
     ] %}
         {% set message -%}
 Config 'incremental_predicates' is not supported by Doris strategy

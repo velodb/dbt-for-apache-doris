@@ -77,7 +77,7 @@ class DorisAdapter(SQLAdapter):
 
     def valid_incremental_strategies(self):
         """Return the built-in incremental strategies implemented by dbt-doris."""
-        return ["append", "merge", "insert_overwrite"]
+        return ["append", "merge", "insert_overwrite", "microbatch"]
 
     def expand_column_types(self, goal, current):
         """Widen string columns using Doris's case-insensitive name rules."""

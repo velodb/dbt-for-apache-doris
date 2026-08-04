@@ -4,7 +4,8 @@
 
 本方案验证 dbt-doris 的 Incremental 行为与 Doris 写入语义一致，重点回答：
 
-1. `append`、`merge`、`insert_overwrite` 是否生成正确的 Doris DML；
+1. `append`、`merge`、`insert_overwrite`、`microbatch` 是否生成正确的
+   Doris DML；Microbatch 是否按 Core 时间边界覆盖一个精确命名分区并清空空批次；
 2. 普通增量是否只使用逻辑临时 View，而不会把同一批数据先写入物理临时表；
 3. 必须冻结批次的 Schema Change、自定义策略是否按设计使用物理 staging；
 4. Canonical View 正向类型切换是否只通过专用物理 CTAS Snapshot 保护数据，
@@ -48,7 +49,7 @@ Doris 在 `INSERT OVERWRITE` 内部创建临时分区、写 Rowset 或发布版�
 完整 Functional、36 项聚焦 Incremental、版本身份和清理证据。这次向 PR #2 的
 选择性移植排除了独立的 Grants/MV 改动，因此发布前仍应在 PR Head 上重跑矩阵；
 不能把历史日志当作新提交产生的证据。PR #2 后续新增的 keyless RANDOM batch
-staging 与物理 Sequence mapping 前置校验也不在该源证据内。
+staging、物理 Sequence mapping 前置校验和 Microbatch 也不在该源证据内。
 
 发布定位与环境基线分别以 Doris 官方
 [下载页](https://doris.apache.org/download/)、
@@ -81,9 +82,9 @@ Doris 原生 `MERGE INTO` 只在 4.1+ 提供，但当前 dbt-doris 的 `merge` �
 5. 保存完整 `test/functional/adapter` 的实际收集数和结果，不得用选测、跳过或
    xfail 替代；
 6. 保存关键 Incremental 套件的实际收集数和结果，覆盖默认路由、SQL 次数、MOW、MOR、
-   Sequence、整表/静态/动态 Overwrite、目标表前置校验、Schema Fail/Retry、Hook、
-   View Replacement 失败、失败原子性、Helper 前置条件、陈旧对象清理和 Full
-   Refresh 证据；
+   Sequence、整表/静态/动态 Overwrite、静态与 Dynamic Partition Microbatch、
+   空批清空、目标表前置校验、Schema Fail/Retry、Hook、View Replacement 失败、
+   失败原子性、Helper 前置条件、陈旧对象清理和 Full Refresh 证据；
 7. 测试 Schema、辅助 Relation、FE/BE 进程和占用端口均完成清理，并记录复查结果。
 
 Functional Session 会输出一行
@@ -101,6 +102,8 @@ Unit Test 不依赖 Doris，负责尽早发现：
 - Jinja 语法、宏 dispatch、参数契约错误；
 - 一个策略宏意外生成多条 SQL；
 - Key、Partition、Relation 名称未正确引用；
+- Microbatch 的 hour/day/month/year Batch ID、UTC-naive 边界、精确 RANGE
+  分区解析、静态缺分区创建、Dynamic Partition 属性漂移和危险配置校验；
 - Schema 类型、大小写匹配和异步 Alter Job 等 Adapter 逻辑错误；
 - Schema Change 等待覆盖新 Job 持续 `RUNNING`、旧 `FINISHED` Job 仍可见以及
   最新 Job 暂不可见三种超时分支，且使用确定性时钟而不真实等待；
@@ -208,8 +211,8 @@ Incremental 日志、失败日志和清理记录。
 前置条件：目标表已存在，使用内置策略，且
 `on_schema_change='ignore'`。
 
-对 `append`、`merge`、`insert_overwrite` 分别运行第二次 dbt model，捕获该
-节点的全部 SQL，并同时满足：
+对 `append`、`merge`、`insert_overwrite` 分别运行第二次 dbt model，并对
+`microbatch` 的每个已有目标批次捕获该节点的全部 SQL，同时满足：
 
 1. 恰好出现一次 `CREATE OR REPLACE VIEW ...__dbt_tmp AS ...`；
 2. 不出现 `CREATE TABLE ...__dbt_tmp`；
@@ -217,6 +220,9 @@ Incremental 日志、失败日志和清理记录。
    - `append`：一条 `INSERT INTO`；
    - `merge`：一条 `INSERT INTO`，由 Unique Key 完成 Upsert；
    - `insert_overwrite`：一条 `INSERT OVERWRITE`；
+   - `microbatch`：一条命名分区 `INSERT OVERWRITE`，不得使用
+     `PARTITION(*)`；静态模式仅在精确分区缺失时额外执行元数据
+     `ALTER TABLE ADD PARTITION`；
 4. 不出现 `DELETE FROM`，也不通过 `BEGIN` 包装多语句删除与插入；
 5. 运行结束后，`information_schema.tables` 中不存在同模型的
    `__dbt_tmp`、`__dbt_backup` 等辅助 Relation；
@@ -227,12 +233,16 @@ Incremental 日志、失败日志和清理记录。
 
 ### 4.2 首次运行
 
-首次运行应直接执行一次目标表 CTAS：
+普通策略首次运行应直接执行一次目标表 CTAS：
 
 - 不创建逻辑 View；
 - 不创建物理 staging；
 - `merge` 的 Key 列按 `unique_key` 配置顺序成为物理 Schema 前缀；
 - Source Key 重复时，目标表不能发布部分数据。
+
+Microbatch 的首次运行由 Core 拆成多个批次：第一批 CTAS 只创建该批的精确
+`[start,end)` 分区，之后每批按 4.1 节执行一次命名分区覆盖。每批 Model 数据只
+物化一次，不得先写 physical staging 再 copy 到目标。
 
 ### 4.3 Full Refresh
 
@@ -243,6 +253,10 @@ Full Refresh 允许创建 physical intermediate table，但应满足：
 - 不再执行一次从 intermediate 到最终表的 `INSERT`；
 - 新对象准备好之前，旧目标保持可查询；
 - 成功后清理旧对象，失败重试时保留或恢复唯一的好副本。
+
+Microbatch Full Refresh 的第一批通过 intermediate CTAS + 元数据交换重建目标，
+后续批次顺序执行精确分区 `ADD`/`INSERT OVERWRITE`；不得让每批都重建整表，也
+不得把完整数据集先物化后再按批复制。
 
 ### 4.4 允许物理 batch staging 的例外
 
@@ -318,6 +332,32 @@ AS SELECT * FROM source_view;
 12. 这条物理 CTAS 仅是正向类型切换 Snapshot，不得被统计为普通内置 Incremental
    的 batch staging 或第二次物化。
 
+### 4.6 Microbatch 分区与时间契约
+
+Microbatch 用例必须同时验证：
+
+1. dbt Core 1.12 的 `hour`、`day`、`month`、`year` Batch ID 均生成安全分区名，
+   Core UTC aware 边界渲染为 Doris UTC-naive `[start,end)` 字面量；至少一次在
+   非 UTC Session 环境运行，证明不会发生时区平移；
+2. 配置 `event_time` 的上游 `ref()` / `source()` 只返回当前窗口，目标 Model
+   输出构成完整批次；CLI Backfill、`lookback` 和普通增量均覆盖相同精确范围；
+3. 静态模式首批 CTAS 创建一个精确 RANGE；已有目标在缺分区时先 ADD 空分区，
+   已有任意名称的精确分区直接复用；粗粒度、重叠或不可解析分区安全失败；
+4. Dynamic Partition 模式不手动 ADD；物理属性漂移或历史窗口没有当前精确分区
+   时在 Hook、DDL 和 DML 前失败；
+5. 每批使用一个物理分区名，不得使用 `PARTITION(*)`。删除某批全部 Source 行后
+   重跑，该目标分区必须变空，而其他分区保持不变；
+6. Adapter 不声明 `MicrobatchConcurrency`，批次顺序执行；同一个 dbt 命令内的
+   首次运行、Full Refresh 和失败重试均不能丢失先前成功批次；
+7. `on_schema_change='ignore'` 每批只创建逻辑 View 和一条目标 DML；其他
+   Schema Change 模式按 4.4 节冻结当前批次，静态 `ADD PARTITION` 必须等 Schema
+   校验和变更成功后再执行；
+8. `unique_key`、Sequence、`overwrite_partitions`、`partition_by_init`、
+   Predicate、不一致的 `event_time` / `partition_by` 和不安全 Dynamic Partition
+   配置必须在写入前拒绝；
+9. Helper 名带 Batch ID；`dbt retry` 或同一 event-time Backfill 必须清理该批
+   Helper。窗口已前移时不得通配删除其他 Batch ID，并在报告中明确残留边界。
+
 ## 5. 功能用例矩阵
 
 | 编号 | 场景 | 关键断言 | 当前自动化 |
@@ -337,11 +377,18 @@ AS SELECT * FROM source_view;
 | INC-030 | 整表 `insert_overwrite` | 本批缺失的旧行被删除；无物理 staging | 已覆盖 |
 | INC-031 | 静态分区覆盖 | 只替换命名分区，其他分区不变 | 已覆盖 |
 | INC-032 | `PARTITION(*)` | 只动态替换本批涉及的分区 | 已覆盖 |
+| INC-033 | Microbatch 四种粒度 | hour/day/month/year Batch ID、分区名和精确 UTC 边界正确 | Unit 已覆盖；五版本 E2E 待复验 |
+| INC-034 | 静态 Microbatch 首批与增量 | 首批精确 CTAS；缺分区 ADD；任意名称精确分区可解析；重叠分区拒绝；每批无物理 staging | Unit 与 PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-035 | Dynamic Partition Microbatch | 配置与物理属性一致；不手动 ADD；窗口缺分区和属性漂移早失败 | Unit 与 PR #2 开发集群正常链路 E2E 已覆盖；缺分区失败注入和官方版本待复验 |
+| INC-036 | Microbatch 空批 | 命名分区 overwrite 清空旧行；其他分区不变；绝不生成 `PARTITION(*)` | Unit 与 PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-037 | Microbatch UTC | aware UTC 边界渲染为无 Offset 的 UTC-naive Doris 字面量 | Unit 已覆盖；非 UTC Session 和官方版本 E2E 待复验 |
+| INC-038 | Microbatch Full Refresh | 首批 intermediate CTAS + 交换；后续逐批命名覆盖；数据不丢失、无完整数据二次 copy | PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-039 | Microbatch 回填与执行顺序 | CLI start/end、lookback 均覆盖预期批次；Adapter 不启用并发批次 | 顺序能力 Unit、CLI/default-lookback PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
 | INC-040 | `delete+insert` / `delete_insert` | Hook 与 SQL 写入前拒绝；目标 Relation 不存在或数据不变 | 已覆盖 |
 | INC-041 | `insert_overwrite + unique_key` | 写入前拒绝并提示迁移到 `merge` 或删除 Key | 已覆盖 |
 | INC-042 | `merge` 无 Key | 编译失败并给出配置示例 | Unit 已覆盖 |
 | INC-043 | 不支持的 Predicate/部分列 Merge | 写入前提示需要未来原生 `MERGE INTO` | Unit 已覆盖 |
-| INC-044 | 已有目标表模型或物理 Key 与策略配置不一致 | `append` 只接受 Duplicate Key；`merge` 只接受与 `unique_key` 完全一致的 Unique Key；在 Hook、staging、DML/ALTER 前失败，DDL、数据和 Helper 均不变 | 三种不一致分支经五版本 E2E 覆盖 |
+| INC-044 | 已有目标表模型或物理 Key 与策略配置不一致 | `append` 只接受 Duplicate Key；`merge` 只接受与 `unique_key` 完全一致的 Unique Key；在 Hook、staging、DML/ALTER 前失败，DDL、数据和 Helper 均不变 | 三种既有不一致分支经五版本 E2E 覆盖；Microbatch 目标/分区不一致为 Unit，官方版本待复验 |
 | INC-050 | `ignore` 下 VARCHAR 扩容 | 大小写不敏感匹配；无物理 staging；等待 Alter 完成 | 已覆盖 |
 | INC-051 | Key/Sequence 类型变化 | 修改物理不可变列前失败，提示 Full Refresh | Key E2E、Key/Sequence Unit 已覆盖 |
 | INC-052 | 仅列名大小写变化 | 不误发 Add + Drop，不删除 Key | 已覆盖 |
@@ -372,6 +419,7 @@ AS SELECT * FROM source_view;
 - 两行重复 Source Key；
 - 高、低两个 Sequence 值；
 - 两个静态分区，以及只触达一个分区的增量批次；
+- 至少三个连续 UTC Microbatch 时间窗口，以及其中一个返回 0 行的重跑批次；
 - `VARCHAR(5)` 目标与 `VARCHAR(40)` Source；
 - 列名只改变大小写的 Source；
 - 名称包含保留字、注释包含 ` AS ` 的 Relation 元数据。
@@ -390,7 +438,8 @@ AS SELECT * FROM source_view;
 - Incremental Canonical 缺失且 Legacy View/Table Backup 存在时再次
   失败，确认 Marker 原名保留、Canonical 仍缺失；随后成功运行完整构建 Canonical
   并清理 Marker；
-- 无效策略和危险迁移配置。
+- 无效策略和危险迁移配置；
+- Microbatch 粗粒度/重叠分区、Dynamic Partition 属性漂移和历史窗口缺分区。
 
 每个失败用例都必须比较运行前后的目标数据，并检查辅助 Relation。只断言 dbt
 返回失败不够，因为 Doris 的 DDL、DML 和 DCL 不由一个 dbt 事务统一回滚。
@@ -400,7 +449,7 @@ AS SELECT * FROM source_view;
 代码合并前必须满足：
 
 1. Unit、Incremental Functional、受影响 Materialization 回归全部通过；
-2. 三个普通内置策略均有 SQL 事件证据证明不存在 physical staging；
+2. 四个内置策略均有 SQL 事件证据证明普通批次不存在 physical staging；
 3. View 类型切换证明只有正向专用 CTAS Snapshot 例外，且 Snapshot 先于所有新模型
    Hook/Header/DDL，旧 View 在线直到 Replacement Build 完成；同时覆盖配置隔离、
    真实 CTAS 失败和 Rename 失败；
@@ -424,7 +473,8 @@ AS SELECT * FROM source_view;
 2. 所有 FE/BE 均是矩阵中的同一个精确版本，并保存完整 build string；
 3. JDK、Adapter SHA、dirty 状态、dbt Core、Python、架构和 Endpoint 均已记录；
 4. 完整 Functional 与聚焦 Incremental 的实际收集数、通过数和 warning 均已保存；
-5. 三个内置策略、MOW/MOR、Sequence、Overwrite 和 Full Refresh 关键断言通过；
+5. 四个内置策略、MOW/MOR、Sequence、Overwrite、Microbatch 空批和 Full
+   Refresh 关键断言通过；
 6. 测试对象、进程和端口清理复查通过；
 7. `DORIS_TEST_EXPECTED_VERSION` Gate 已拒绝 `0.0.0`，并证明所有存活 FE/BE
    返回完全一致的完整 Version 且属于目标精确版本；
@@ -484,12 +534,12 @@ Unit 与五版本 E2E 绑定测试提交
 与聚焦 Incremental 的正式结果按版本登记在第 8.4 节。此前 Unit 321 与开发
 混合集群结果早于最终调整，仅保留为历史记录。
 
-PR #2 的 `agent/complete-incremental-strategies` 选择性移植工作树另行完成了
-当前分支验证：252 项 Unit 全部通过（15.19s）；40 项聚焦 Incremental Functional 在
+加入 Microbatch 前，PR #2 的 `agent/complete-incremental-strategies` 选择性移植
+工作树另行完成了分支验证：252 项 Unit 全部通过（15.19s）；40 项聚焦 Incremental Functional 在
 FE/BE 同为 `doris-0.0.0-ebec9530ba` 的本地开发集群上全部通过（26 warnings，
 46.15s），Table/View/Partition 共享宏回归 12 项全部通过（12 warnings，9.78s），
 测试 Schema 与 Helper Relation 残留为 0；Flake8、`git diff --check`、wheel/sdist
-构建和 Twine Check 均通过。当前完整 Adapter 套件收集 97 项；新增四个 Sequence
+构建和 Twine Check 均通过。当时完整 Adapter 套件收集 97 项；新增四个 Sequence
 物理前置校验和一个 keyless target 分支前，92 项套件曾有一次运行在 80 项通过后
 被 ASAN BE 的系统低水位保护中断，其余错误均为 `MEM_LIMIT_EXCEEDED`。该运行按
 环境失败记录，不算完整
@@ -498,6 +548,28 @@ FE/BE 同为 `doris-0.0.0-ebec9530ba` 的本地开发集群上全部通过（26 
 其中 40 项聚焦套件明确覆盖 keyless RANDOM batch staging、keyless append target
 和物理 Sequence mapping 前置校验；这些是 PR #2 新增边界，正式版本状态仍为
 pending。
+
+2026-08-04 的 Microbatch dirty PR Head 候选（base SHA `5d001da6a076d77e4241cf6c1af4e1b17c62854b`）
+另行完成以下验证：
+
+| 套件 | 当前结果 |
+| --- | --- |
+| Unit Test | 281 passed / 26.76s |
+| 本地开发集群完整 Functional | 99 passed / 101 warnings / 135.19s；FE/BE `doris-0.0.0-ebec9530ba` |
+| 本地开发集群聚焦 Incremental | 42 passed / 28 warnings / 58.87s |
+| Table/View/Partition 共享宏回归 | 12 passed / 12 warnings / 11.37s |
+| Doris 4.1.3 Microbatch 聚焦 | 2 passed / 2 warnings / 6.06s；FE/BE `doris-4.1.3-rc02-7126cf65d96`；Version Gate passed |
+| Flake8 / `git diff --check` | passed |
+| Build / Twine 7.0.0 | wheel 与 sdist 构建成功，均 PASSED |
+| wheel | 67,289 bytes；SHA-256 `d725c8d81c774b33995c294118de20abf7923fee496773098ac4cb3cbe36d253` |
+| sdist | 106,237 bytes；SHA-256 `8785a0d9c05b75308775061a7c71a4a1e8fb97438fcaaf78aa5e6c3cb671f077` |
+| Python 3.12.13 全新 venv wheel 安装 | `/tmp/dbt-doris-microbatch-wheel.GX5uKf`；四种合法策略与三个 Incremental Macro 文件存在；`pip check` 无损坏依赖 |
+
+本地完整与聚焦运行结束后，测试 Schema 和 `__dbt_tmp` / `__dbt_backup` Helper
+查询结果均为 0。4.1.3 的两项用例覆盖静态分区、Dynamic Partition、空批清空、
+显式 event-time Backfill 和 Full Refresh，但 Adapter 仍为 `dirty=true`，且没有
+运行 4.1.3 的完整 99 项套件；所以它只是聚焦开发证据，不能把第 8.4 节的旧完整
+结果升级成当前 PR Head 的正式通过。其余四个精确发行版本仍待 Microbatch 复验。
 
 ### 8.3 旧精确版本运行（stale）
 
@@ -531,7 +603,7 @@ Pre-model Ordering 实现及当时包含的 Incremental 边界用例在五个正
 本节的 `passed` 范围严格限定为上表两套实际运行的 E2E、精确版本 Gate、Artifact
 与清理证据。第 5 节标记为 Unit-only 的检查不表示在每个 Doris 版本上单独执行，
 它们由同一干净候选的 327 项 Unit 结果覆盖。本节不包含 PR #2 后续新增的
-keyless RANDOM batch staging 与物理 Sequence mapping 前置校验。
+keyless RANDOM batch staging、物理 Sequence mapping 前置校验或 Microbatch。
 
 每个版本均记录 FE/BE 完整 Version 完全一致、所有节点 `Alive=true`、测试数据库
 残留 0、Helper Relation 残留 0。2.1.11 暴露的调用 Session `sql_mode` 问题已由
