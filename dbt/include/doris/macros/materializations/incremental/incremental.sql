@@ -22,6 +22,7 @@
   {% set target_relation = this.incorporate(type='table') %}
   {% set existing_relation = load_relation(this) %}
   {% set tmp_relation = make_temp_relation(this) %}
+  {% set grant_config = config.get('grants') %}
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
   {% set to_drop = [] %}
@@ -123,6 +124,16 @@ altered in place. Rebuild it:
   {% call statement("main") %}
       {{ build_sql }}
   {% endcall %}
+
+  {% set revoke_existing_grants = should_revoke(
+      existing_relation,
+      full_refresh_mode=full_refresh_mode
+  ) %}
+  {% do apply_grants(
+      target_relation,
+      grant_config,
+      should_revoke=revoke_existing_grants
+  ) %}
 
   {% do persist_docs(target_relation, model) %}
   {{ run_hooks(post_hooks, inside_transaction=True) }}

@@ -88,8 +88,8 @@ adapter can identify the task submitted by the current dbt action.
 The supported refresh triggers are `manual`, `schedule`, and `commit`.
 Schedules accept `second`, `minute`, `hour`, `day`, or `week`. Set
 `refresh_on_run=true` to refresh an unchanged manual MV on each dbt run.
-Materialized-view `grants` are rejected until Doris-specific grant
-introspection and DCL are implemented.
+Materialized-view `grants` use the same Doris privilege reconciliation as
+tables and views.
 
 ## Test
 

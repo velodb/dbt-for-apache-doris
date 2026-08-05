@@ -1109,7 +1109,6 @@ def test_invalid_distribution_config_fails_before_sql_execution(config, message)
             },
             "refresh_poll_interval.*greater.*refresh_wait_timeout",
         ),
-        ({"grants": {"select": ["analyst"]}}, "grants.*not supported"),
     ],
 )
 def test_invalid_ddl_config_fails_before_sql_execution(config, message):
@@ -1121,6 +1120,20 @@ def test_invalid_ddl_config_fails_before_sql_execution(config, message):
             FakeRelation(relation_type="materialized_view"),
             "select 1",
         )
+
+
+def test_grants_are_valid_materialized_view_config():
+    runner = materialized_view_runner(
+        config={"grants": {"select": ["analyst"]}}
+    )
+
+    sql = runner.sql(
+        "doris__get_create_materialized_view_as_sql",
+        FakeRelation(relation_type="materialized_view"),
+        "select 1",
+    )
+
+    assert sql.startswith("create materialized view")
 
 
 def test_relation_listing_queries_async_materialized_view_metadata():

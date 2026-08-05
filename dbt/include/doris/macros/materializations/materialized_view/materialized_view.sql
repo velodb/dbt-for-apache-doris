@@ -171,11 +171,6 @@
             ~ "refresh_wait_timeout."
         ) }}
     {%- endif -%}
-    {%- if config.get('grants') -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view grants are not supported by the Doris adapter."
-        ) }}
-    {%- endif -%}
 {%- endmacro %}
 
 {% macro doris__validate_materialized_view_distribution_config() -%}
@@ -622,6 +617,15 @@
             code='skip',
             rows_affected=-1
         ) %}
+        {% set revoke_existing_grants = should_revoke(
+            existing_relation,
+            full_refresh_mode=true
+        ) %}
+        {% do apply_grants(
+            target_relation,
+            grant_config,
+            should_revoke=revoke_existing_grants
+        ) %}
     {%- else -%}
         {{ run_hooks(pre_hooks, inside_transaction=true) }}
 
@@ -713,14 +717,14 @@
             ) %}
         {%- endif -%}
 
-        {% set should_revoke = should_revoke(
+        {% set revoke_existing_grants = should_revoke(
             existing_relation,
             full_refresh_mode=true
         ) %}
         {% do apply_grants(
             target_relation,
             grant_config,
-            should_revoke=should_revoke
+            should_revoke=revoke_existing_grants
         ) %}
 
         {{ run_hooks(post_hooks, inside_transaction=true) }}

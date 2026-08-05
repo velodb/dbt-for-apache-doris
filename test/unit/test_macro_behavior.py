@@ -67,6 +67,90 @@ def test_current_timestamp_is_utc():
     assert runner.sql("doris__current_timestamp") == "utc_timestamp()"
 
 
+class TestGrants:
+    def runner(self):
+        return MacroRunner("adapters/grants.sql")
+
+    def test_show_grants_uses_doris_table_privileges(self):
+        sql = self.runner().sql(
+            "doris__get_show_grant_sql",
+            FakeRelation(schema="analytics", identifier="orders"),
+        )
+
+        assert "from information_schema.table_privileges" in sql
+        assert "table_schema = 'analytics'" in sql
+        assert "table_name = 'orders'" in sql
+        assert "as grantee" in sql
+        assert "as privilege_type" in sql
+
+    @pytest.mark.parametrize(
+        "privilege,doris_privilege",
+        [
+            ("select", "SELECT_PRIV"),
+            ("insert", "LOAD_PRIV"),
+            ("alter", "ALTER_PRIV"),
+            ("create", "CREATE_PRIV"),
+            ("drop", "DROP_PRIV"),
+            ("show_view", "SHOW_VIEW_PRIV"),
+        ],
+    )
+    def test_grant_maps_dbt_privileges(self, privilege, doris_privilege):
+        sql = self.runner().sql(
+            "doris__get_grant_sql",
+            FakeRelation(),
+            privilege,
+            ["analyst"],
+        )
+
+        assert sql == (
+            f"grant {doris_privilege} on `dbt_test`.`my_model` "
+            "to 'analyst'@'%'"
+        )
+
+    def test_revoke_supports_an_explicit_user_host(self):
+        sql = self.runner().sql(
+            "doris__get_revoke_sql",
+            FakeRelation(),
+            "select",
+            ["analyst@10.%"],
+        )
+
+        assert sql.endswith("from 'analyst'@'10.%'")
+
+    @pytest.mark.parametrize(
+        "macro,args,message",
+        [
+            (
+                "doris__grant_privilege",
+                ("execute",),
+                "Unsupported Doris grant privilege",
+            ),
+            (
+                "doris__grant_user_identity",
+                ("role:analyst",),
+                "role grants cannot be reconciled",
+            ),
+        ],
+    )
+    def test_unsupported_grants_fail_before_dcl(self, macro, args, message):
+        with pytest.raises(CapturedCompilerError, match=message):
+            self.runner().render(macro, *args)
+
+    def test_each_dcl_statement_runs_separately(self):
+        runner = self.runner()
+
+        runner.render(
+            "doris__call_dcl_statements",
+            ["grant SELECT_PRIV on db.table to user1", "revoke LOAD_PRIV on db.table from user2"],
+        )
+
+        assert [statement.name for statement in runner.statements] == [
+            "grant_1",
+            "grant_2",
+        ]
+        assert len(runner.statements) == 2
+
+
 class TestSingleStatementDDL:
     """dbt sends one statement per `execute()`; the connector cannot take two.
 
