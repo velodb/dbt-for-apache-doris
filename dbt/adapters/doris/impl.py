@@ -149,7 +149,17 @@ class DorisAdapter(SQLAdapter):
         table = table_from_rows(
             table.rows,
             table.column_names,
-            text_only_columns=["table_schema", "table_name"],
+            text_only_columns=[
+                "table_database",
+                "table_schema",
+                "table_name",
+                "table_type",
+                "table_comment",
+                "table_owner",
+                "column_name",
+                "column_type",
+                "column_comment",
+            ],
         )
         return table.where(cls._catalog_filter_schemas(used_schemas))
 
@@ -157,16 +167,53 @@ class DorisAdapter(SQLAdapter):
     def _catalog_filter_schemas(
             used_schemas: FrozenSet[Tuple[str, str]]
     ):
-        schemas = frozenset((None, s.lower()) for d, s in used_schemas)
+        schemas = frozenset(((d or ""), s.lower()) for d, s in used_schemas)
 
         def predicate(row: agate.Row) -> bool:
-            table_database = row.get("table_database")
+            table_database = row.get("table_database") or ""
             table_schema = row.get("table_schema")
             if table_schema is None:
                 return False
             return (table_database, table_schema.lower()) in schemas
 
         return predicate
+
+    def get_filtered_catalog(self, relation_configs, used_schemas, relations=None):
+        """Match dbt's empty database name to Doris' single namespace.
+
+        ``DorisRelation`` normalizes database to ``None`` because Doris has no
+        catalog level between a connection and a database/schema. Manifest
+        nodes, however, carry ``database=''``. dbt Core's selected-relation
+        filter treats those as different keys and removes every catalog row.
+        Apply the same filter with both representations normalized to the empty
+        string, which is also the value returned by ``doris__get_catalog``.
+        """
+        catalogs, exceptions = super().get_filtered_catalog(
+            relation_configs,
+            used_schemas,
+            relations=None,
+        )
+        if relations and catalogs:
+            relation_map = {
+                (
+                    (relation.database or "").casefold(),
+                    relation.schema.casefold() if relation.schema else None,
+                    relation.identifier.casefold() if relation.identifier else None,
+                )
+                for relation in relations
+            }
+
+            def in_map(row):
+                database = (row.get("table_database") or "").casefold()
+                schema = row.get("table_schema")
+                identifier = row.get("table_name")
+                schema = schema.casefold() if schema else None
+                identifier = identifier.casefold() if identifier else None
+                return (database, schema, identifier) in relation_map
+
+            catalogs = catalogs.where(in_map)
+
+        return catalogs, exceptions
 
     @classmethod
     def convert_number_type(cls, agate_table: agate.Table, col_idx: int) -> str:

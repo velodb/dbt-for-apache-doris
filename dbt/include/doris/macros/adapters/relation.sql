@@ -60,7 +60,9 @@
 
 {% macro doris__table_comment() -%}
   {% set description = model.get('description', "") %}
-  COMMENT '{{description}}'
+  {% if config.persist_relation_docs() and description %}
+    COMMENT '{{ description | replace("\\", "\\\\") | replace("'", "\\'") }}'
+  {% endif %}
 {%- endmacro %}
 
 {% macro doris__unique_key() -%}

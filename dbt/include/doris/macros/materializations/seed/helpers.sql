@@ -18,7 +18,7 @@
 {% macro doris__create_csv_table(model, agate_table) -%}
     {% set column_override = model['config'].get('column_types', {}) %}
     {% set quote_seed_column = model['config'].get('quote_columns', None) %}
-    {% set col = model.get('columns', None) %}
+    {% set documented_columns = model.get('columns', {}) %}
 
     {#
         {{print(column_override)}}
@@ -32,11 +32,24 @@
             {% set inferred_type = adapter.convert_type(agate_table, loop.index0) %}
             {% set col_type = column_override.get(col_name, inferred_type) %}
             {% set column_name = (col_name | string) %}
-            {{ adapter.quote_seed_column(column_name, quote_seed_column) }} {{ col_type }}{% if not loop.last %},{% endif %}
+            {{ adapter.quote_seed_column(column_name, quote_seed_column) }} {{ col_type }}
+            {%- set description = namespace(value=none) -%}
+            {%- for documented_name, column_info in documented_columns.items() -%}
+                {%- set quoted = column_info.get('quote', false) -%}
+                {%- if (quoted and documented_name == column_name)
+                    or (not quoted and documented_name | lower == column_name | lower) -%}
+                    {%- set description.value = column_info.get('description') or none -%}
+                {%- endif -%}
+            {%- endfor -%}
+            {%- if config.persist_column_docs() and description.value %}
+                COMMENT '{{ description.value | replace("\\", "\\\\") | replace("'", "\\'") }}'
+            {%- endif -%}
+            {% if not loop.last %},{% endif %}
         {% endfor %}
     )
     {{ doris__engine() }}
     {{ doris__duplicate_key() }}
+    {{ doris__table_comment() }}
     {{ doris__partition_by() }}
     {{ doris__distributed_by(agate_table.column_names[0:1]) }}
     {{ doris__properties() }}

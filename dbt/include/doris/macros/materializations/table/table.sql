@@ -34,9 +34,13 @@
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
   -- build model
-  {% call statement('main') -%}
-    {{ doris__create_table_as(False, intermediate_relation, sql) }}
-  {%- endcall %}
+  {% if config.persist_column_docs() %}
+    {% do doris__create_documented_table_as(False, intermediate_relation, sql) %}
+  {% else %}
+    {% call statement('main') -%}
+      {{ doris__create_table_as(False, intermediate_relation, sql) }}
+    {%- endcall %}
+  {% endif %}
 
   {% if existing_relation is not none and existing_relation.type == 'table' -%}
     {% do exchange_relation(target_relation, intermediate_relation, True) %}

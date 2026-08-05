@@ -51,6 +51,67 @@
 {%- endmacro %}
 
 
+{% macro doris__documented_column_description(column_name) -%}
+    {%- set documented = namespace(value=none) -%}
+    {%- for documented_name, column_info in model.get('columns', {}).items() -%}
+        {%- set quoted = column_info.get('quote', false) -%}
+        {%- if (quoted and documented_name == column_name)
+            or (not quoted and documented_name | lower == column_name | lower) -%}
+            {%- set documented.value = column_info.get('description') or none -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{ return(documented.value) }}
+{%- endmacro %}
+
+
+{% macro doris__create_documented_table_as(temporary, relation, sql, unique=false) -%}
+    {#-- Doris CTAS cannot declare column comments. Build the query once in a
+         private source table, read Doris' exact inferred types, then create the
+         final staging table with inline comments and copy the rows. Inline
+         comments preserve arbitrary quotes; ALTER COMMENT does not on all
+         supported Doris versions. --#}
+    {%- set source_relation = relation.incorporate(
+        path={'identifier': relation.identifier ~ '__dbt_docs_source'},
+        type='table'
+    ) -%}
+    {% do doris__drop_relation(source_relation) %}
+
+    {% call statement('create_documented_table_source') %}
+        {{ doris__create_table_as(temporary, source_relation, sql) }}
+    {% endcall %}
+
+    {%- set source_columns = adapter.get_columns_in_relation(source_relation) -%}
+    {% call statement('create_documented_table') %}
+        create table {{ relation.include(database=False) }} (
+        {%- for column in source_columns %}
+            `{{ column.name | replace("`", "``") }}` {{ column.data_type }}
+            {%- set description = doris__documented_column_description(column.name) -%}
+            {%- if description %}
+                COMMENT '{{ description | replace("\\", "\\\\") | replace("'", "\\'") }}'
+            {%- endif -%}
+            {{- "," if not loop.last }}
+        {%- endfor %}
+        )
+        {% if unique %}
+            {{ doris__unique_key() }}
+        {% else %}
+            {{ doris__duplicate_key() }}
+        {% endif %}
+        {{ doris__table_comment() }}
+        {{ doris__partition_by() }}
+        {{ doris__distributed_by() }}
+        {{ doris__properties() }}
+    {% endcall %}
+
+    {% call statement('main') %}
+        insert into {{ relation }}
+        select * from {{ source_relation }}
+    {% endcall %}
+
+    {% do doris__drop_relation(source_relation) %}
+{%- endmacro %}
+
+
 {#--
     Wrap the model SQL so that declared column types are applied via CAST.
 

@@ -37,16 +37,25 @@
   {% if strategy == 'append' %}
         {#-- create table first --#}
         {% if existing_relation is none  %}
-            {% set build_sql = doris__create_table_as(False, target_relation, sql) %}
+            {% if config.persist_column_docs() %}
+                {% do doris__create_documented_table_as(False, target_relation, sql) %}
+                {% set build_sql = "select 'hello doris'" %}
+            {% else %}
+                {% set build_sql = doris__create_table_as(False, target_relation, sql) %}
+            {% endif %}
         {% elif existing_relation.is_view or full_refresh_mode %}
             {#-- backup table is new table ,exchange table backup and old table #}
             {% set backup_identifier = existing_relation.identifier ~ "__dbt_backup" %}
             {% set backup_relation = existing_relation.incorporate(path={"identifier": backup_identifier}) %}
             {% do adapter.drop_relation(backup_relation) %} {#-- likes 'drop table if exists ... ' --#}
-            {% set run_sql = doris__create_table_as(False, backup_relation, sql) %}
-            {% call statement("run_sql") %}
-                {{ run_sql }}
-            {% endcall %}
+            {% if config.persist_column_docs() %}
+                {% do doris__create_documented_table_as(False, backup_relation, sql) %}
+            {% else %}
+                {% set run_sql = doris__create_table_as(False, backup_relation, sql) %}
+                {% call statement("run_sql") %}
+                    {{ run_sql }}
+                {% endcall %}
+            {% endif %}
             {% do exchange_relation(target_relation, backup_relation, True) %}
             {% set build_sql = "select 'hello doris'" %}
         {#-- append data --#}
@@ -60,17 +69,26 @@
   {% elif strategy == 'insert_overwrite' %}
         {#-- create table first --#}
         {% if existing_relation is none  %}
-            {% set build_sql = doris__create_unique_table_as(False, target_relation, sql) %}
+            {% if config.persist_column_docs() %}
+                {% do doris__create_documented_table_as(False, target_relation, sql, true) %}
+                {% set build_sql = "select 'hello doris'" %}
+            {% else %}
+                {% set build_sql = doris__create_unique_table_as(False, target_relation, sql) %}
+            {% endif %}
         {#-- insert data refresh --#}
         {% elif existing_relation.is_view or full_refresh_mode %}
             {#-- backup table is new table ,exchange table backup and old table #}
             {% set backup_identifier = existing_relation.identifier ~ "__dbt_backup" %}
             {% set backup_relation = existing_relation.incorporate(path={"identifier": backup_identifier}) %}
             {% do adapter.drop_relation(backup_relation) %} {#-- likes 'drop table if exists ... ' --#}
-            {% set run_sql = doris__create_unique_table_as(False, backup_relation, sql) %}
-            {% call statement("run_sql") %}
-                {{ run_sql }}
-            {% endcall %}
+            {% if config.persist_column_docs() %}
+                {% do doris__create_documented_table_as(False, backup_relation, sql, true) %}
+            {% else %}
+                {% set run_sql = doris__create_unique_table_as(False, backup_relation, sql) %}
+                {% call statement("run_sql") %}
+                    {{ run_sql }}
+                {% endcall %}
+            {% endif %}
             {% do exchange_relation(target_relation, backup_relation, True) %}
             {% set build_sql = "select 'hello doris'" %}
         {#-- append data --#}
@@ -106,7 +124,7 @@ altered in place. Rebuild it:
       {{ build_sql }}
   {% endcall %}
 
-  {#--  {% do persist_docs(target_relation, model) %}  #}
+  {% do persist_docs(target_relation, model) %}
   {{ run_hooks(post_hooks, inside_transaction=True) }}
   {% do adapter.commit() %}
   {% for rel in to_drop %}

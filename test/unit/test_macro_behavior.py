@@ -213,7 +213,8 @@ class TestPersistDocs:
         assert len(runner.statements) == 1
         sql = runner.statements[0].sql
         assert sql == (
-            "alter table `dbt_test`.`my_model` modify column `id` " "comment 'the user id'"
+            'alter table `dbt_test`.`my_model` modify column `id` '
+            'comment "the user id"'
         ), sql
         # Doris rejects a type in MODIFY COLUMN for key and distribution columns.
         assert "int" not in sql, f"the column type must be omitted: {sql}"
@@ -226,8 +227,7 @@ class TestPersistDocs:
             {"id": {"description": "it's a c:\\path"}},
         )
         sql = runner.statements[0].sql
-        assert "\\'" in sql, f"single quotes must be escaped: {sql}"
-        assert "\\\\path" in sql, f"backslashes must be escaped: {sql}"
+        assert 'comment "it\'s a c:\\path"' in sql
 
     def test_columns_without_a_description_are_skipped(self):
         runner = self.runner()
@@ -255,7 +255,16 @@ class TestPersistDocs:
     def test_relation_comment_escapes_quotes(self):
         runner = self.runner()
         runner.render("doris__alter_relation_comment", FakeRelation(), "it's fine")
-        assert "\\'" in runner.statements[0].sql
+        assert 'comment "it\'s fine"' in runner.statements[0].sql
+
+    def test_complex_comment_update_requires_a_full_refresh(self):
+        runner = self.runner()
+        with pytest.raises(CapturedCompilerError, match="--full-refresh"):
+            runner.render(
+                "doris__alter_relation_comment",
+                FakeRelation(),
+                "it's \"documented\"",
+            )
 
 
 class TestIncrementalStrategyValidation:
