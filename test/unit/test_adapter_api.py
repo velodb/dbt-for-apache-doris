@@ -22,9 +22,13 @@
 
 import inspect
 
+import pytest
+
 from dbt.adapters.capability import Capability
 from dbt.adapters.doris.impl import DorisAdapter
+from dbt.adapters.doris.relation import DorisRelation
 from dbt_common.clients.agate_helper import table_from_rows
+from dbt_common.exceptions import DbtRuntimeError
 
 
 def test_class_level_adapter_methods_remain_classmethods():
@@ -96,3 +100,60 @@ def test_catalog_preserves_empty_doris_database_for_manifest_matching():
 
     assert len(filtered.rows) == 1
     assert filtered.rows[0]["table_database"] == ""
+
+
+def test_schema_change_waits_until_the_new_job_finishes(monkeypatch):
+    adapter = object.__new__(DorisAdapter)
+    relation = DorisRelation.create(schema="analytics", identifier="events")
+    jobs = iter(
+        [
+            {"job_id": "2", "state": "RUNNING", "message": ""},
+            {"job_id": "2", "state": "FINISHED", "message": ""},
+        ]
+    )
+    monkeypatch.setattr(adapter, "_latest_schema_change_job", lambda _: next(jobs))
+    sleeps = []
+    monkeypatch.setattr(
+        "dbt.adapters.doris.impl.time.sleep",
+        lambda seconds: sleeps.append(seconds),
+    )
+
+    adapter.wait_for_schema_change(relation, previous_job_id="1")
+
+    assert sleeps == [0.2]
+
+
+def test_schema_change_cancelled_job_is_reported(monkeypatch):
+    adapter = object.__new__(DorisAdapter)
+    relation = DorisRelation.create(schema="analytics", identifier="events")
+    monkeypatch.setattr(
+        adapter,
+        "_latest_schema_change_job",
+        lambda _: {
+            "job_id": "2",
+            "state": "CANCELLED",
+            "message": "invalid type conversion",
+        },
+    )
+
+    with pytest.raises(DbtRuntimeError, match="invalid type conversion"):
+        adapter.wait_for_schema_change(relation, previous_job_id="1")
+
+
+def test_latest_schema_change_job_uses_newest_table_job(monkeypatch):
+    adapter = object.__new__(DorisAdapter)
+    relation = DorisRelation.create(schema="analytics", identifier="events")
+    captured = {}
+
+    class Result:
+        rows = []
+
+    def execute(sql, auto_begin, fetch):
+        captured["sql"] = sql
+        return None, Result()
+
+    monkeypatch.setattr(adapter, "execute", execute)
+
+    assert adapter._latest_schema_change_job(relation) is None
+    assert "where TableName = 'events'" in captured["sql"]
+    assert "order by JobId desc limit 1" in captured["sql"]

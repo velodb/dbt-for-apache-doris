@@ -16,8 +16,19 @@
 -- under the License.
 
 {% macro doris__snapshot_hash_arguments(args) -%}
+    {# Doris current_timestamp() has second precision. Check-strategy runs in
+       the same second therefore need a nonce to keep version ids distinct.
+       Timestamp strategy expressions come from the source and stay stable. #}
+    {% set hash_state = namespace(needs_nonce=false) %}
+    {% for arg in args %}
+        {% if 'current_timestamp()' in (arg | lower | replace(' ', '')) %}
+            {% set hash_state.needs_nonce = true %}
+        {% endif %}
+    {% endfor %}
     md5(concat_ws('|', {%- for arg in args -%}
         coalesce(cast({{ arg }} as char), '')
         {% if not loop.last %}, {% endif %}
-    {%- endfor -%}))
+    {%- endfor -%}
+        {% if hash_state.needs_nonce %}, uuid(){% endif %}
+    ))
 {%- endmacro %}
