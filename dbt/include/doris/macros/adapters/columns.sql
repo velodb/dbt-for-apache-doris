@@ -28,23 +28,193 @@
         order by ordinal_position
     {% endcall %}
     {% set table = load_result('get_columns_in_relation').table %}
-    {{ return(sql_convert_columns_in_relation(table)) }}
+    {{ return(doris__sql_convert_columns_in_relation(table)) }}
 {%- endmacro %}
 
-{% macro sql_convert_columns_in_relation(table) -%}
+
+{% macro doris__sql_convert_columns_in_relation(table) -%}
     {% set columns = [] %}
     {% for row in table %}
         {% set col_name = row['column'] %}
         {% set col_type = row['dtype'] %}
-        {% do columns.append(api.Column.create(col_name, col_type)) %}
+        {# Preserve complex Doris types verbatim. Only split the two primitive
+           parameterized types dbt itself compares structurally. #}
+        {% if col_type.lower().startswith('varchar(') %}
+            {% do columns.append(api.Column(
+                col_name,
+                'varchar',
+                row['char_size'],
+                none,
+                none
+            )) %}
+        {% elif col_type.lower().startswith('decimal(') %}
+            {% do columns.append(api.Column(
+                col_name,
+                'decimal',
+                none,
+                row['numeric_precision'],
+                row['numeric_scale']
+            )) %}
+        {% else %}
+            {% do columns.append(api.Column(
+                col_name,
+                col_type,
+                none,
+                none,
+                none
+            )) %}
+        {% endif %}
     {% endfor %}
     {{ return(columns) }}
 {%- endmacro %}
 
+
+{% macro sql_convert_columns_in_relation(table) -%}
+    {{ return(doris__sql_convert_columns_in_relation(table)) }}
+{%- endmacro %}
+
+
+{% macro doris__diff_column_data_types(source_columns, target_columns) %}
+    {% set changes = [] %}
+    {% for source_column in source_columns %}
+        {% set matches = [] %}
+        {% for target_column in target_columns %}
+            {% if (
+                target_column.name | lower
+                == source_column.name | lower
+            ) %}
+                {% do matches.append(target_column) %}
+            {% endif %}
+        {% endfor %}
+        {% if matches %}
+            {% set target_column = matches[0] %}
+            {% if (
+                source_column.expanded_data_type
+                != target_column.expanded_data_type
+                and not source_column.can_expand_to(
+                    other_column=target_column
+                )
+            ) %}
+                {% do changes.append({
+                    'column_name': target_column.name,
+                    'new_type': source_column.expanded_data_type
+                }) %}
+            {% endif %}
+        {% endif %}
+    {% endfor %}
+    {{ return(changes) }}
+{% endmacro %}
+
+
+{% macro doris__check_for_schema_changes(source_relation, target_relation) %}
+    {# Doris resolves column names case-insensitively. Core's default helper is
+       case-sensitive and can otherwise turn `id` -> `ID` into ADD + DROP. #}
+    {% set source_columns = adapter.get_columns_in_relation(source_relation) %}
+    {% set target_columns = adapter.get_columns_in_relation(target_relation) %}
+    {% set source_names = [] %}
+    {% set target_names = [] %}
+    {% for column in source_columns %}
+        {% do source_names.append(column.name | lower) %}
+    {% endfor %}
+    {% for column in target_columns %}
+        {% do target_names.append(column.name | lower) %}
+    {% endfor %}
+
+    {% set source_not_in_target = [] %}
+    {% set target_not_in_source = [] %}
+    {% for column in source_columns %}
+        {% if column.name | lower not in target_names %}
+            {% do source_not_in_target.append(column) %}
+        {% endif %}
+    {% endfor %}
+    {% for column in target_columns %}
+        {% if column.name | lower not in source_names %}
+            {% do target_not_in_source.append(column) %}
+        {% endif %}
+    {% endfor %}
+    {% set new_target_types = doris__diff_column_data_types(
+        source_columns,
+        target_columns
+    ) %}
+    {% set schema_changed = false %}
+    {% if source_not_in_target or target_not_in_source or new_target_types %}
+        {% set schema_changed = true %}
+    {% endif %}
+
+    {% set changes = {
+        'schema_changed': schema_changed,
+        'source_not_in_target': source_not_in_target,
+        'target_not_in_source': target_not_in_source,
+        'source_columns': source_columns,
+        'target_columns': target_columns,
+        'new_target_types': new_target_types
+    } %}
+    {% do log(
+        'Doris schema changes for ' ~ target_relation ~ ': ' ~ changes,
+        info=false
+    ) %}
+    {{ return(changes) }}
+{% endmacro %}
+
 {% macro doris__alter_column_type(relation, column_name, new_column_type) -%}
+    {% set previous_job_id = adapter.get_latest_schema_change_job_id(relation) %}
     {% call statement('alter_column_type') %}
-        alter table {{ relation }} modify column {{ column_name }} {{ new_column_type }}
+        alter table {{ relation }} modify column
+            {{ adapter.quote(column_name) }} {{ new_column_type }}
     {% endcall %}
+    {% do adapter.wait_for_schema_change(relation, previous_job_id) %}
+{% endmacro %}
+
+
+{% macro doris__sync_column_schemas(
+    on_schema_change,
+    target_relation,
+    schema_changes_dict
+) %}
+    {% set add_to_target = schema_changes_dict['source_not_in_target'] %}
+    {% set remove_from_target = schema_changes_dict['target_not_in_source'] %}
+    {% set new_target_types = schema_changes_dict['new_target_types'] %}
+
+    {% if on_schema_change == 'append_new_columns' %}
+        {% if add_to_target | length > 0 %}
+            {% set previous_job_id = adapter.get_latest_schema_change_job_id(
+                target_relation
+            ) %}
+            {% do alter_relation_add_remove_columns(
+                target_relation,
+                add_to_target,
+                none
+            ) %}
+            {% do adapter.wait_for_schema_change(
+                target_relation,
+                previous_job_id
+            ) %}
+        {% endif %}
+
+    {% elif on_schema_change == 'sync_all_columns' %}
+        {% if add_to_target | length > 0 or remove_from_target | length > 0 %}
+            {% set previous_job_id = adapter.get_latest_schema_change_job_id(
+                target_relation
+            ) %}
+            {% do alter_relation_add_remove_columns(
+                target_relation,
+                add_to_target,
+                remove_from_target
+            ) %}
+            {% do adapter.wait_for_schema_change(
+                target_relation,
+                previous_job_id
+            ) %}
+        {% endif %}
+
+        {% for type_change in new_target_types %}
+            {% do alter_column_type(
+                target_relation,
+                type_change['column_name'],
+                type_change['new_type']
+            ) %}
+        {% endfor %}
+    {% endif %}
 {% endmacro %}
 
 {% macro columns_and_constraints(table_type="table") %}

@@ -65,6 +65,28 @@
     {{ return("'" ~ quoted_user ~ "'@'" ~ quoted_host ~ "'") }}
 {%- endmacro %}
 
+{% macro doris__preflight_grants(relation, grant_config) -%}
+    {# Doris DCL is non-transactional. Validate privileges and principals before
+       a materialization changes the target relation. #}
+    {%- if not grant_config -%}
+        {{ return(none) }}
+    {%- endif -%}
+    {%- for privilege, grantees in grant_config.items() -%}
+        {% do doris__grant_privilege(privilege) %}
+        {%- if grantees is string or grantees is not sequence -%}
+            {% do exceptions.raise_compiler_error(
+                "Doris grant '" ~ privilege ~ "' must contain a list of grantees."
+            ) %}
+        {%- endif -%}
+        {%- for grantee in grantees -%}
+            {%- set identity = doris__grant_user_identity(grantee) -%}
+            {%- if execute -%}
+                {% do run_query('show grants for ' ~ identity) %}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endfor -%}
+{%- endmacro %}
+
 {% macro doris__get_show_grant_sql(relation) -%}
     {%- set schema_name = relation.schema | replace("\\", "\\\\") | replace("'", "\\'") -%}
     {%- set relation_name = relation.identifier | replace("\\", "\\\\") | replace("'", "\\'") -%}

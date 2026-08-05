@@ -18,18 +18,95 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import pytest
-
 import os
-import random
+from pathlib import Path
 
+import mysql.connector
+import pytest
 import yaml
 from dbt.tests.util import write_file
+
+from test.e2e_version_evidence import (
+    enforce_expected_doris_version,
+    format_version_evidence,
+    random_schema_prefix,
+    version_evidence,
+)
 
 # Import the functional fixtures as a plugin
 # Note: fixtures with session scope need to be local
 
 pytest_plugins = ["dbt.tests.fixtures.project"]
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FUNCTIONAL_TEST_ROOT = PROJECT_ROOT / "test" / "functional"
+
+
+def _doris_test_connection_settings():
+    return {
+        "host": os.getenv("DORIS_TEST_HOST", "127.0.0.1"),
+        "port": int(os.getenv("DORIS_TEST_PORT", 9030)),
+        "username": os.getenv("DORIS_TEST_USER", "root"),
+        "password": os.getenv("DORIS_TEST_PASSWORD", ""),
+    }
+
+
+def _session_has_functional_tests(items):
+    return any(
+        FUNCTIONAL_TEST_ROOT in Path(str(item.path)).resolve().parents
+        for item in items
+    )
+
+
+def _emit_version_evidence(request, evidence):
+    evidence_line = format_version_evidence(evidence)
+    terminal_reporter = request.config.pluginmanager.get_plugin("terminalreporter")
+    if terminal_reporter is None:
+        print(evidence_line, flush=True)
+    else:
+        terminal_reporter.write_line(evidence_line)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def doris_e2e_version_evidence(request):
+    """Print exact client, adapter, FE, and BE versions before live tests."""
+    if not _session_has_functional_tests(request.session.items):
+        return
+
+    settings = _doris_test_connection_settings()
+    connection = mysql.connector.connect(
+        host=settings["host"],
+        port=settings["port"],
+        user=settings["username"],
+        password=settings["password"],
+        connection_timeout=10,
+    )
+    try:
+        evidence = version_evidence(
+            connection,
+            PROJECT_ROOT,
+            f"{settings['host']}:{settings['port']}",
+        )
+    finally:
+        connection.close()
+
+    expected_version = os.environ.get("DORIS_TEST_EXPECTED_VERSION")
+    try:
+        evidence["doris_version_gate"] = enforce_expected_doris_version(
+            evidence,
+            expected_version,
+        )
+    except RuntimeError as error:
+        evidence["doris_version_gate"] = {
+            "error": str(error),
+            "expected_release": expected_version,
+            "reported_build": None,
+            "status": "failed",
+        }
+        _emit_version_evidence(request, evidence)
+        raise
+
+    _emit_version_evidence(request, evidence)
 
 
 @pytest.fixture(scope="class")
@@ -41,19 +118,20 @@ def prefix():
     making every database created by the suite easy to identify and constrain.
     """
     schema_prefix = os.getenv("DORIS_TEST_SCHEMA", "dbt_test")
-    return f"{schema_prefix}_{random.randint(0, 9999):04}"
+    return random_schema_prefix(schema_prefix)
 
 
 # The profile dictionary, used to write out profiles.yml
 @pytest.fixture(scope="class")
 def dbt_profile_target():
+    settings = _doris_test_connection_settings()
     return {
         "type": "doris",
         "threads": 1,
-        "host": os.getenv("DORIS_TEST_HOST", "127.0.0.1"),
-        "port": int(os.getenv("DORIS_TEST_PORT", 9030)),
-        "username": os.getenv("DORIS_TEST_USER", "root"),
-        "password": os.getenv("DORIS_TEST_PASSWORD", ""),
+        "host": settings["host"],
+        "port": settings["port"],
+        "username": settings["username"],
+        "password": settings["password"],
         "schema": os.getenv("DORIS_TEST_SCHEMA", "dbt_test"),
     }
 

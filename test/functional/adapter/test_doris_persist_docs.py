@@ -83,6 +83,32 @@ models:
         description: Updated name docs
 """
 
+INCREMENTAL_MERGE_DOCS_SQL = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='merge',
+    unique_key=['id'],
+    distributed_by=['id'],
+    persist_docs={'relation': true, 'columns': true},
+    properties={'replication_num': '1'}
+) }}
+
+select cast(1 as int) as id, cast('first' as varchar(20)) as name
+"""
+
+INCREMENTAL_MERGE_DOCS_YML = """
+version: 2
+models:
+  - name: incremental_merge_docs
+    description: Merge relation docs
+    columns:
+      - name: id
+        description: |
+          Merge "id" owner's value
+      - name: name
+        description: Merge name docs
+"""
+
 
 def relation_comment(project, relation):
     row = project.run_sql(
@@ -172,3 +198,37 @@ class TestDorisIncrementalPersistDocs:
             "id": "Updated identifier docs",
             "name": "Updated name docs",
         }
+
+        write_file(INCREMENTAL_DOCS_INITIAL_YML, "models", "schema.yml")
+        assert len(run_dbt(["run", "--full-refresh"])) == 1
+
+        assert relation_comment(project, relation).strip() == (
+            'Initial "orders" owner\'s history'
+        )
+        assert column_comments(project, relation)["id"].strip() == (
+            'Identifier "id" owner\'s value'
+        )
+
+
+class TestDorisIncrementalMergePersistDocs:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "incremental_merge_docs.sql": INCREMENTAL_MERGE_DOCS_SQL,
+            "schema.yml": INCREMENTAL_MERGE_DOCS_YML,
+        }
+
+    def test_merge_create_keeps_unique_table_and_inline_docs(self, project):
+        assert len(run_dbt(["run"])) == 1
+        relation = relation_from_name(project.adapter, "incremental_merge_docs")
+
+        assert relation_comment(project, relation) == "Merge relation docs"
+        assert column_comments(project, relation)["id"].strip() == (
+            'Merge "id" owner\'s value'
+        )
+        ddl = project.run_sql(
+            f"show create table {relation}",
+            fetch="one",
+        )[1].lower()
+        assert "unique key" in ddl
+        assert '"enable_unique_key_merge_on_write" = "true"' in ddl

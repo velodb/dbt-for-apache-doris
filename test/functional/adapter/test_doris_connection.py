@@ -52,8 +52,16 @@ class TestDorisDebug:
         return {"multi_type.sql": MULTI_TYPE_MODEL_SQL}
 
     def test_debug(self, project):
-        results = run_dbt(["debug"])
-        assert results is True
+        try:
+            results = run_dbt(["debug"])
+            assert results is True
+        finally:
+            # dbt-tests-adapter cannot use its normal schema teardown after
+            # `dbt debug` resets the adapter registry. Clean this exact schema
+            # while the test connection is still available.
+            project.run_sql(
+                f"drop database if exists `{project.test_schema}`"
+            )
 
 
 class TestDorisMultiType:

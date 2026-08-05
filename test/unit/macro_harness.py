@@ -32,6 +32,7 @@ behavioural coverage in the functional suite.
 """
 
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from dbt_common.clients.jinja import extract_toplevel_blocks, get_environment
@@ -152,6 +153,25 @@ class FakeRelation:
         return f"`{self.schema}`.`{self.identifier}`"
 
 
+class FakeColumn:
+    """Minimal dbt Column used by SQL-producing strategy macro tests."""
+
+    def __init__(self, name):
+        self.name = name
+
+    @property
+    def quoted(self):
+        return f"`{self.name}`"
+
+
+class FakeAdapter:
+    """Small adapter surface shared by isolated SQL macro tests."""
+
+    @staticmethod
+    def quote(identifier):
+        return f"`{identifier}`"
+
+
 class FakeRow:
     """Stand-in for an agate Row, as returned by ``run_query``.
 
@@ -238,6 +258,7 @@ class MacroRunner:
             "exceptions": FakeExceptions(),
             "model": {},
             "basestring": str,
+            "modules": {"re": re},
             "log": lambda msg, info=False: "",
         }
 

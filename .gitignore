@@ -144,5 +144,12 @@ dbt_packages/
 .dbt/
 profiles.yml
 
-# Detailed design and research notes are kept locally, not published with the adapter.
-docs/
+# Publish maintained user/roadmap documents; keep other research notes local.
+docs/*
+!docs/materialized-view.zh-CN.md
+!docs/materialized-view-test-plan.zh-CN.md
+!docs/incremental.zh-CN.md
+!docs/incremental-test-plan.zh-CN.md
+!docs/dbt-doris-test-plan.zh-CN.md
+!docs/dbt-doris-todo-list.zh-CN.md
+!docs/dbt-doris-issue-65967-async-materialized-view-requirements.zh-CN.md

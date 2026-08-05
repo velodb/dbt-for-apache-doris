@@ -24,29 +24,49 @@
     behind, so the next statement on that connection fails with
     `2014 Commands out of sync`. Callers now drop the relation themselves.
 --#}
-{% macro doris__create_table_as(temporary, relation, sql) -%}
+{% macro doris__create_table_as(
+    temporary,
+    relation,
+    sql,
+    include_sql_header=true,
+    sql_is_prepared=false
+) -%}
     {% set sql_header = config.get('sql_header', none) %}
     {% set table = relation.include(database=False) %}
-    {{ sql_header if sql_header is not none }}
+    {% set select_sql = (
+        sql if sql_is_prepared else doris__table_colume_type(sql)
+    ) %}
+    {{ sql_header if include_sql_header and sql_header is not none }}
     create table {{ table }}
     {{ doris__duplicate_key() }}
     {{ doris__table_comment()}}
     {{ doris__partition_by() }}
     {{ doris__distributed_by() }}
-    {{ doris__properties() }} as {{ doris__table_colume_type(sql) }};
+    {{ doris__properties() }} as {{ select_sql }};
 
 {%- endmacro %}
 
-{% macro doris__create_unique_table_as(temporary, relation, sql) -%}
+{% macro doris__create_unique_table_as(
+    temporary,
+    relation,
+    sql,
+    include_sql_header=true,
+    sql_is_prepared=false
+) -%}
     {% set sql_header = config.get('sql_header', none) %}
     {% set table = relation.include(database=False) %}
-    {{ sql_header if sql_header is not none }}
+    {% set select_sql = (
+        sql if sql_is_prepared else doris__table_colume_type(sql)
+    ) %}
+    {{ sql_header if include_sql_header and sql_header is not none }}
     create table {{ table }}
     {{ doris__unique_key() }}
     {{ doris__table_comment()}}
     {{ doris__partition_by() }}
     {{ doris__distributed_by() }}
-    {{ doris__properties() }} as {{ doris__table_colume_type(sql) }};
+    {{ doris__properties({
+        'enable_unique_key_merge_on_write': 'true'
+    }) }} as {{ select_sql }};
 
 {%- endmacro %}
 
@@ -64,7 +84,14 @@
 {%- endmacro %}
 
 
-{% macro doris__create_documented_table_as(temporary, relation, sql, unique=false) -%}
+{% macro doris__create_documented_table_as(
+    temporary,
+    relation,
+    sql,
+    unique=false,
+    include_sql_header=true,
+    sql_is_prepared=false
+) -%}
     {#-- Doris CTAS cannot declare column comments. Build the query once in a
          private source table, read Doris' exact inferred types, then create the
          final staging table with inline comments and copy the rows. Inline
@@ -77,7 +104,13 @@
     {% do doris__drop_relation(source_relation) %}
 
     {% call statement('create_documented_table_source') %}
-        {{ doris__create_table_as(temporary, source_relation, sql) }}
+        {{ doris__create_table_as(
+            temporary,
+            source_relation,
+            sql,
+            include_sql_header,
+            sql_is_prepared
+        ) }}
     {% endcall %}
 
     {%- set source_columns = adapter.get_columns_in_relation(source_relation) -%}
@@ -100,7 +133,13 @@
         {{ doris__table_comment() }}
         {{ doris__partition_by() }}
         {{ doris__distributed_by() }}
-        {{ doris__properties() }}
+        {% if unique %}
+            {{ doris__properties({
+                'enable_unique_key_merge_on_write': 'true'
+            }) }}
+        {% else %}
+            {{ doris__properties() }}
+        {% endif %}
     {% endcall %}
 
     {% call statement('main') %}
@@ -109,6 +148,88 @@
     {% endcall %}
 
     {% do doris__drop_relation(source_relation) %}
+{%- endmacro %}
+
+
+{#--
+    Create a frozen source for schema-changing runs and custom strategies.
+
+    This is deliberately not create_table_as(True, ...). Doris does not have a
+    non-physical CTAS mode on the supported 2.1+ baseline, and inheriting the
+    target model's partition clauses or Unique-Key-only properties can make a
+    batch staging table invalid. Keep only distribution and one replication
+    setting here.
+--#}
+{% macro doris__create_incremental_staging_table(relation, source_sql) -%}
+    {% set configured_properties = config.get('properties', validator=validation.any[dict]) %}
+    {% set replication_num = config.get('replication_num') %}
+    {% if replication_num is none and configured_properties %}
+        {% set replication_num = configured_properties.get('replication_num') %}
+    {% endif %}
+    {% set replication_allocation = none %}
+    {% if replication_num is none and configured_properties %}
+        {% set replication_allocation = configured_properties.get(
+            'replication_allocation'
+        ) %}
+    {% endif %}
+
+    create table {{ relation.include(database=False) }}
+    {{ doris__distributed_by() }}
+    {% if replication_num is not none %}
+    properties ("replication_num" = "{{ replication_num }}")
+    {% elif replication_allocation is not none %}
+    properties ("replication_allocation" = "{{ replication_allocation }}")
+    {% endif %}
+    as {{ source_sql }};
+{%- endmacro %}
+
+
+{#--
+    Freeze a View as a recovery Table without replaying its stored SQL text.
+
+    Callers evaluate the source before the replacement model changes the
+    session because Doris 2.1 can apply the current SQL mode while reading a
+    View. Do not inherit the new model's key, distribution, partition, or
+    contract configuration: the old View may not contain those columns. Use a
+    keyless Duplicate model and random distribution so non-keyable first
+    columns remain valid snapshot data.
+--#}
+{% macro doris__create_view_snapshot_table(relation, source_relation) -%}
+    {% set configured_properties = config.get(
+        'properties',
+        validator=validation.any[dict]
+    ) %}
+    {% set replication_num = config.get('replication_num') %}
+    {% if replication_num is none and configured_properties %}
+        {% set replication_num = configured_properties.get('replication_num') %}
+    {% endif %}
+    {% set replication_allocation = none %}
+    {% if replication_num is none and configured_properties %}
+        {% set replication_allocation = configured_properties.get(
+            'replication_allocation'
+        ) %}
+    {% endif %}
+    {% set snapshot_properties = {
+        'enable_duplicate_without_keys_by_default': 'true'
+    } %}
+    {% if replication_num is not none %}
+        {% do snapshot_properties.update({
+            'replication_num': replication_num
+        }) %}
+    {% elif replication_allocation is not none %}
+        {% do snapshot_properties.update({
+            'replication_allocation': replication_allocation
+        }) %}
+    {% endif %}
+
+    create table {{ relation.include(database=False) }}
+    distributed by random buckets auto
+    properties (
+        {% for key, value in snapshot_properties.items() %}
+        "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+    )
+    as select * from {{ source_relation }};
 {%- endmacro %}
 
 
