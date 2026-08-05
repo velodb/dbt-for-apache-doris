@@ -150,6 +150,48 @@ class TestContractProjection:
         ), f"an enforced contract should cast to the declared types: {sql}"
 
 
+class TestViewContractValidation:
+    def test_enforced_contract_runs_preflight_before_create(self):
+        class Contract:
+            enforced = True
+
+        validated = []
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig({"contract": Contract()}),
+                "get_assert_columns_equivalent": validated.append,
+            },
+        )
+
+        sql = runner.sql(
+            "doris__create_view_as",
+            FakeRelation(relation_type="view"),
+            "select 1 as id",
+        )
+
+        assert validated == ["select 1 as id"]
+        assert "create or replace view" in sql.lower()
+
+    def test_unenforced_view_skips_contract_preflight(self):
+        validated = []
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig(),
+                "get_assert_columns_equivalent": validated.append,
+            },
+        )
+
+        runner.sql(
+            "doris__create_view_as",
+            FakeRelation(relation_type="view"),
+            "select 1 as id",
+        )
+
+        assert validated == []
+
+
 class TestPersistDocs:
     """Column comments come from dbt as {column_name: column_info_dict}.
 

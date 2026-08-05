@@ -17,6 +17,14 @@
 
 {% macro doris__create_view_as(relation, sql) -%}
   {%- set sql_header = config.get('sql_header', none) -%}
+  {%- set contract_config = config.get('contract') -%}
+
+  {#-- dbt's default macro validates a view contract before executing CREATE.
+       Keep that preflight check when overriding the macro for Doris so a bad
+       contract cannot replace an existing, valid view. --#}
+  {% if contract_config and contract_config.enforced %}
+    {{ get_assert_columns_equivalent(sql) }}
+  {% endif %}
 
   {{ sql_header if sql_header is not none }}
   create or replace view {{ relation }} as {{ sql }};

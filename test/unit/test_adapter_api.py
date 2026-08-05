@@ -48,4 +48,7 @@ def test_quoted_contract_column_renders_without_an_adapter_instance():
     )
 
     assert len(columns) == 1
-    assert columns[0].get_col_name() == "`order`"
+    assert columns[0].get_col_name() == "order"
+    assert columns[0].get_table_column_constraint() == (
+        "cast(`order` as bigint) as `order`"
+    )

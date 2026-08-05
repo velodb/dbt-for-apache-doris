@@ -194,7 +194,10 @@ class DorisAdapter(SQLAdapter):
     def render_raw_columns_constraints(cls, raw_columns: Dict[str, Dict[str, Any]]) -> List:
         rendered_column_constraints = []
         for v in raw_columns.values():
-            cols_name = cls.quote(v["name"]) if v.get("quote") else v["name"]
+            # DorisColumnItem quotes identifiers when it renders SQL. Passing an
+            # already quoted name for `quote: true` produced invalid double
+            # backticks such as ``order`` in contracted model projections.
+            cols_name = v["name"]
             data_type = v.get('data_type')
             comment = v.get('description')
 
