@@ -18,62 +18,167 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Functional tests for loaded_at_field source freshness."""
+"""End-to-end Source Freshness coverage against Doris."""
 
 import pytest
-from dbt.tests.util import run_dbt
+from dbt.tests.adapter.utils.test_current_timestamp import (
+    BaseCurrentTimestampNaive,
+)
+from dbt.tests.util import relation_from_name, run_dbt
 
 
-FRESHNESS_SEED_CSV = """id,loaded_at
-1,2099-01-01 00:00:00
+FRESHNESS_SEED_CSV = """id,loaded_at,is_valid
+1,2099-01-01 00:00:00,1
+2,2099-01-01 00:00:00,0
 """
 
-FRESHNESS_SOURCE_YML = """
+LOADED_AT_FIELD_SOURCE_YML = """
 version: 2
 sources:
   - name: raw
     schema: "{{ target.schema }}"
     tables:
       - name: freshness_events
-        loaded_at_field: loaded_at
-        freshness:
-          warn_after:
-            count: 1
-            period: day
-          error_after:
-            count: 2
-            period: day
+        config:
+          loaded_at_field: loaded_at
+          freshness:
+            warn_after:
+              count: 1
+              period: hour
+            error_after:
+              count: 2
+              period: hour
+"""
+
+FILTERED_SOURCE_YML = """
+version: 2
+sources:
+  - name: raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: freshness_events
+        config:
+          loaded_at_field: loaded_at
+          freshness:
+            filter: is_valid = 1
+            warn_after:
+              count: 1
+              period: hour
+            error_after:
+              count: 2
+              period: hour
+"""
+
+LOADED_AT_QUERY_SOURCE_YML = """
+version: 2
+sources:
+  - name: raw
+    schema: "{{ target.schema }}"
+    tables:
+      - name: freshness_events
+        config:
+          loaded_at_query: |
+            select max(loaded_at) from {{ this }} where is_valid = 1
+          freshness:
+            warn_after:
+              count: 1
+              period: hour
+            error_after:
+              count: 2
+              period: hour
 """
 
 
-class TestDorisLoadedAtFieldFreshness:
+class DorisFreshnessFixtures:
+    source_yml = LOADED_AT_FIELD_SOURCE_YML
+
     @pytest.fixture(scope="class")
     def seeds(self):
         return {"freshness_events.csv": FRESHNESS_SEED_CSV}
 
     @pytest.fixture(scope="class")
     def models(self):
-        return {"sources.yml": FRESHNESS_SOURCE_YML}
+        return {"sources.yml": self.source_yml}
 
     @pytest.fixture(scope="class")
     def project_config_update(self):
         return {
             "seeds": {
-                "test": {
-                    "freshness_events": {
-                        "column_types": {
-                            "id": "int",
-                            "loaded_at": "datetime",
-                        }
-                    }
+                "+column_types": {
+                    "id": "int",
+                    "loaded_at": "datetime",
+                    "is_valid": "boolean",
                 }
             }
         }
 
-    def test_loaded_at_field_freshness_passes(self, project):
-        seed_results = run_dbt(["seed"])
-        assert len(seed_results) == 1
+    @staticmethod
+    def seed_relation(project):
+        assert len(run_dbt(["seed", "--full-refresh"])) == 1
+        return relation_from_name(project.adapter, "freshness_events")
 
-        freshness_results = run_dbt(["source", "freshness"])
-        assert len(freshness_results) == 1
-        assert str(freshness_results[0].status) == "pass"
+    @classmethod
+    def replace_rows(cls, project, valid_age_minutes, invalid_age_minutes=None):
+        relation = cls.seed_relation(project)
+        if invalid_age_minutes is None:
+            invalid_age_minutes = valid_age_minutes
+        project.run_sql(f"truncate table {relation}")
+        project.run_sql(
+            f"insert into {relation} "
+            "select 1, "
+            f"utc_timestamp() - interval {valid_age_minutes} minute, true "
+            "union all select 2, "
+            f"utc_timestamp() - interval {invalid_age_minutes} minute, false"
+        )
+        return relation
+
+
+class TestDorisCurrentTimestamp(BaseCurrentTimestampNaive):
+    """dbt requires its current_timestamp macro to return UTC."""
+
+
+class TestDorisLoadedAtFieldFreshness(DorisFreshnessFixtures):
+    @pytest.mark.parametrize(
+        "age_minutes,expected_status,expect_pass",
+        [(30, "pass", True), (90, "warn", True), (180, "error", False)],
+    )
+    def test_pass_warn_and_error_thresholds(
+        self,
+        project,
+        age_minutes,
+        expected_status,
+        expect_pass,
+    ):
+        self.replace_rows(project, age_minutes)
+
+        results = run_dbt(["source", "freshness"], expect_pass=expect_pass)
+
+        assert len(results) == 1
+        assert str(results[0].status) == expected_status
+        assert abs(results[0].age - (age_minutes * 60)) < 15
+
+
+class TestDorisFilteredFreshness(DorisFreshnessFixtures):
+    source_yml = FILTERED_SOURCE_YML
+
+    def test_filter_excludes_newer_invalid_rows(self, project):
+        self.replace_rows(project, valid_age_minutes=90, invalid_age_minutes=5)
+
+        results = run_dbt(["source", "freshness"])
+
+        assert len(results) == 1
+        assert str(results[0].status) == "warn"
+        assert abs(results[0].age - (90 * 60)) < 15
+
+
+class TestDorisLoadedAtQueryFreshness(DorisFreshnessFixtures):
+    source_yml = LOADED_AT_QUERY_SOURCE_YML
+
+    def test_loaded_at_query_is_rendered_and_collected(self, project):
+        self.replace_rows(project, valid_age_minutes=90, invalid_age_minutes=5)
+
+        results = run_dbt(["source", "freshness"])
+
+        assert len(results) == 1
+        assert str(results[0].status) == "warn"
+        assert abs(results[0].age - (90 * 60)) < 15

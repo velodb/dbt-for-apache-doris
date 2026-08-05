@@ -61,6 +61,12 @@ def table_runner(config=None, model=None, columns_sql="`id` int"):
     )
 
 
+def test_current_timestamp_is_utc():
+    runner = MacroRunner("adapters/freshness.sql")
+
+    assert runner.sql("doris__current_timestamp") == "utc_timestamp()"
+
+
 class TestSingleStatementDDL:
     """dbt sends one statement per `execute()`; the connector cannot take two.
 

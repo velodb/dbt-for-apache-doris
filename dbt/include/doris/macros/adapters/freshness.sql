@@ -16,5 +16,8 @@
 -- under the License.
 
 {% macro doris__current_timestamp() -%}
-  current_timestamp()
+  {#-- dbt Core treats timezone-naive adapter timestamps as UTC. Doris'
+       current_timestamp() follows the session time zone, so using it here can
+       shift freshness ages by the session offset. --#}
+  utc_timestamp()
 {%- endmacro %}
