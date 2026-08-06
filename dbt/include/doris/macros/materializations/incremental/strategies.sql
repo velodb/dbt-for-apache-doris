@@ -16,11 +16,13 @@
 -- under the License.
 
 {#
-    Doris strategy macros keep dbt Core's standard arg_dict keys and accept two
+    Doris strategy macros keep dbt Core's standard arg_dict keys and accept four
     adapter-specific keys:
 
       source_sql               compiled model SQL for a direct, single DML
       temp_relation_exists     whether temp_relation is a named source
+      overwrite_partitions     optional whole/static/dynamic overwrite scope
+      microbatch_partition     exact physical partition for the current batch
 
     append, merge, insert_overwrite and microbatch may inline source_sql. The
     materialization can instead provide a logical schema view or a frozen

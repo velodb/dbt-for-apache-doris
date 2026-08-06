@@ -5,7 +5,9 @@
 不同能力；本文只说明 Incremental。
 
 发布验证、SQL 次数判定和失败注入清单见
-[Incremental 测试方案](incremental-test-plan.zh-CN.md)。
+[Incremental 测试方案](incremental-test-plan.zh-CN.md)；当前全部 pytest 节点、
+参数化分支和覆盖语义见
+[Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)。
 
 dbt-doris 内置支持四种 Incremental 策略：`append`、`merge`、
 `insert_overwrite` 和 `microbatch`。已有目标表且
@@ -504,5 +506,7 @@ dbt run --full-refresh --select <model>
 
 - [Incremental 测试方案](incremental-test-plan.zh-CN.md)：精确版本证据、SQL
   次数和失败注入矩阵；
+- [Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)：逐项 pytest
+  节点、参数化 case 数和覆盖语义；
 - Doris 4.1+ 原生 `MERGE INTO` 尚未实现；`merge` 仍使用本文说明的跨版本
   Unique Key Upsert 路径，`microbatch` 使用命名分区 `INSERT OVERWRITE`。

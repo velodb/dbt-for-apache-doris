@@ -19,6 +19,9 @@
 Doris 在 `INSERT OVERWRITE` 内部创建临时分区、写 Rowset 或发布版本，属于存储
 引擎实现，不计为 dbt-doris 的第二次物化。
 
+当前代码中逐项 pytest 节点、参数化分支和覆盖语义见
+[Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)。
+
 ## 2. 测试基线与矩阵
 
 ### 2.1 验证层级
@@ -117,6 +120,11 @@ Unit Test 不依赖 Doris，负责尽早发现：
 - Incremental 不依赖 Generic View Rename/Exchange；Canonical 缺失时保留 Backup
   Marker，并保证连续失败期间 `is_incremental()` 始终为 false，完整成功后才清理。
 
+当前直接归属于 Incremental 的 Unit/Macro 共 112 case：106 个行为 case，加上
+三个 Incremental Macro 文件展开的 6 个解析与 License case；它们均包含在完整
+281 项 Unit 中。逐方法和参数分支见
+[Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)。
+
 执行命令：
 
 ```bash
@@ -150,7 +158,7 @@ python -m pytest -q test/functional/adapter/test_doris_incremental.py
 每个版本必须保存两次运行的完整输出以及
 `DORIS_E2E_VERSION_EVIDENCE=<JSON>` 行。第二条命令不能替代完整套件。
 当前 `test/functional` 下只有 `adapter/`，所以 umbrella 路径也会收集同样的
-97 项；正式证据仍记录本轮实际执行的 `test/functional/adapter` 命令。第 8.4 节
+99 项；正式证据仍记录本轮实际执行的 `test/functional/adapter` 命令。第 8.4 节
 源候选的 98 项包含这次未移入 PR #2 的独立 Grants/MV 覆盖，不能作为当前收集数。
 `DORIS_TEST_EXPECTED_VERSION` 必须设置为当前矩阵行；Session Gate 会在测试前
 检查所有存活 FE/BE 的完整 Version 字符串。Expected `0.0.0` 会被拒绝；所有
