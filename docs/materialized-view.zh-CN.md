@@ -17,8 +17,8 @@ dbt Core 的开发与测试基线是 1.12.x。每次管理 Async MV 前，Adapte
 直接失败。当前代码 Gate 接受 2.x 中不低于 2.1.5 的版本、除 3.0.0 外的
 3.x，以及主版本 4 及以上。
 
-Async MV 生命周期已经在以下五个 Doris 官方发行版本上直接运行同一组 21 项
-专项 Functional Test；每个版本均全部通过且没有 Skip：
+历史基线的 Async MV 生命周期已经在以下五个 Doris 官方发行版本上直接运行同一组
+21 项专项 Functional Test；每个版本均全部通过且没有 Skip：
 
 | Doris | FE/BE 完整 Version | MV 专项结果 |
 | --- | --- | --- |
@@ -37,8 +37,13 @@ dbt Core 1.12.0、dbt-doris 1.0.0、Python 3.11.15、pytest 8.4.2。五个版本
 单 FE/BE、`replication_num=1`，FE/BE 完整 Version 一致且 `Alive=true`；测试后
 对应数据库残留均为 0。共执行 105 项 MV Functional Test，105 项通过。
 
-逐项测试步骤、21 个 Case 的完整断言、复现命令、原始证据位置和未覆盖边界见
+当前 22 个 Functional Case、124 个直接相关 Unit/Adapter Item、历史 21 项五版本
+结果、复现命令和未覆盖边界见
 [异步物化视图专项测试说明与执行记录](materialized-view-test-plan.zh-CN.md)。
+
+同一干净 Git Tree `7a362c8` 上，Doris 4.1.3 Functional 为 `22 passed`，无集群的
+Unit/Adapter 定向测试为 `124 passed`；其余四个历史版本尚未补跑新增的 MV Grants
+Case，因此不能把上表直接改写为当前 22 项的五版本矩阵。
 
 这组边界是代码中人为设置的运行条件，不是多版本 E2E 得出的最低/排除版本结论。
 当前证据证明的是上表五个精确版本，仍没有证明 2.1.5 是准确最低版本或 3.0.0

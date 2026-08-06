@@ -55,15 +55,23 @@ CI/执行脚本和发布兼容性声明。
 
 ### 4.2 当前已接入
 
-| 官方测试域 | 官方基类/套件 | 本地入口 | 当前用例数 |
+| 官方测试域 | 官方基类/套件 | 本地入口 | 当前 Item |
 | --- | --- | --- | ---: |
-| Basic | `BaseSimpleMaterializations`、Singular、Ephemeral、Empty、Generic、Adapter Methods | `test/functional/adapter/test_basic.py` | 7 |
-| Incremental | `BaseIncrementalOnSchemaChange` | `test/functional/adapter/test_doris_incremental.py` | 4 |
-| Materialized View | `MaterializedViewBasic` | `test/functional/adapter/test_doris_materialized_view_basic.py` | 8 |
-| **合计** |  |  | **19** |
+| Basic | Simple Materializations、Singular、Ephemeral、Empty、Generic、Adapter Methods | `test_basic.py` | 7 |
+| Constraints | Table/View/Incremental Columns Equal | `test_doris_contract.py` | 12 |
+| Utils | `BaseCurrentTimestampNaive` | `test_doris_freshness.py` | 2 |
+| Grants | Model、Incremental、Seed、Snapshot、Invalid Grants | `test_doris_grants.py` | 5 |
+| Incremental | `BaseIncrementalOnSchemaChange` | `test_doris_incremental.py` | 4 |
+| Materialized View | `MaterializedViewBasic` | `test_doris_materialized_view_basic.py` | 8 |
+| Persist Docs | `BasePersistDocs*` | `test_doris_persist_docs.py` | 7 |
+| Store Test Failures | `BaseStoreTestFailures*`、官方交互/项目级场景 | `test_doris_store_failures.py` | 9 |
+| **合计** |  |  | **54** |
 
-这里的“19”是当前 dbt Core 1.12 环境下的收集基线，不是固定产品指标。升级 dbt 后应以
-`pytest --collect-only` 的实际结果为准。
+统计口径是 pytest 展开后的 Item：51 项直接继承 `dbt.tests.adapter` 的测试方法，另有
+3 项为 Doris 子类对同名官方方法的方言适配覆盖。只复用官方 Helper、但测试方法由
+dbt-doris 自己定义的 Case 不算官方 Item，例如 MV-E2E-022。当前 142 个 Functional
+Item 因而分为 **54 个官方合约 Item + 88 个 Doris 专项 Item**。历史的
+`19 官方 + 79 专项` 只对应早期 98 项基线，不能继续作为当前统计。
 
 ### 4.3 官方套件补齐计划
 
@@ -71,9 +79,9 @@ CI/执行脚本和发布兼容性声明。
 
 | 状态/优先级 | 官方测试域 | 处理要求 |
 | --- | --- | --- |
-| 已接入 | `basic`、`incremental` 的 schema change、`materialized_view.basic` | 持续跟随 dbt Core 版本维护 |
-| P0：已有相应能力，优先接入 | `simple_seed`、`simple_snapshot`、`grants`、`persist_docs`、`constraints`、`unit_testing`、`catalog`、`hooks`、`relations` | 先跑官方原始套件；仅对确认的 Doris 差异做最小适配 |
-| P1：通用兼容性扩展 | `caching`、`concurrency`、`column_types`、`query_comment`、`dbt_debug`、`dbt_show`、`store_test_failures_tests`、`utils` | 逐项确认 Adapter 能力和 Doris 行为后接入 |
+| 已接入 | 第 4.2 节的 Basic、Constraints、Current Timestamp、Grants、Incremental、Materialized View、Persist Docs、Store Test Failures | 持续跟随 dbt Core 版本维护 |
+| P0：已有相应能力，优先审计官方映射 | `simple_seed`、`simple_snapshot`、`unit_testing`、`catalog`、`hooks`、`relations` | 先跑官方原始套件；仅对确认的 Doris 差异做最小适配 |
+| P1：通用兼容性扩展 | `caching`、`concurrency`、`column_types`、`query_comment`、`dbt_debug`、`dbt_show`、其余 `utils` | 逐项确认 Adapter 能力和 Doris 行为后接入 |
 | 当前不适用 | `python_model`、`dbt_clone`、`sample_mode` 等未声明支持的能力 | 在能力进入支持范围时转为 P0/P1；此前记录不适用原因 |
 
 每次新增 Adapter 能力时，必须先检查 `dbt.tests.adapter` 是否已有对应官方套件：有则接入
@@ -94,12 +102,12 @@ CI/执行脚本和发布兼容性声明。
 | Freshness/Hooks/Grants | source freshness、前后置钩子、授权与回收 | `test_doris_freshness.py`、`test_doris_hooks.py`、`test_doris_grants.py` |
 | Partition | 分区定义、静态/动态分区操作 | `test_doris_partition.py` |
 | Incremental | append、merge、insert overwrite、schema change、full refresh、失败恢复 | `test_doris_incremental.py` |
-| 异步物化视图 | 创建、刷新、等待、配置变更、回滚、版本门禁、类型切换 | `test_doris_materialized_view*.py` |
+| 异步物化视图 | 创建、刷新、等待、配置变更、回滚、版本门禁、类型切换、Grants | `test_doris_materialized_view*.py`、`test_doris_grants.py::TestDorisMaterializedViewGrants` |
 | dbt Unit Test | 用户项目中的 dbt unit test 能否通过 Adapter 执行 | `test_doris_unit_test.py` |
 
 Incremental 的完整输入组合、失败注入和验收规则见
-[Incremental 专项测试方案](incremental-test-plan.zh-CN.md)。异步物化视图的 21 个
-真实 Doris Case、五版本执行记录和未覆盖边界见
+[Incremental 专项测试方案](incremental-test-plan.zh-CN.md)。异步物化视图当前 22 个
+真实 Doris Case、124 个直接相关 Unit/Adapter Item、历史五版本执行记录和未覆盖边界见
 [异步物化视图专项测试说明](materialized-view-test-plan.zh-CN.md)，配置和生命周期见
 [异步物化视图使用与实现说明](materialized-view.zh-CN.md)。
 
@@ -181,7 +189,8 @@ python -m pytest -q test/functional/adapter/test_doris_incremental.py
 python -m pytest -q \
   test/functional/adapter/test_doris_materialized_view.py \
   test/functional/adapter/test_doris_materialized_view_basic.py \
-  test/functional/adapter/test_doris_materialized_view_complete.py
+  test/functional/adapter/test_doris_materialized_view_complete.py \
+  test/functional/adapter/test_doris_grants.py::TestDorisMaterializedViewGrants
 ```
 
 重点回归用于开发反馈，不能替代发布前的全量功能测试。
@@ -245,20 +254,24 @@ python -m pytest -q \
 
 ## 11. 当前状态与后续工作
 
-截至 2026-08-03：
+截至 2026-08-06：
 
-- 当前代码可收集 **327 个单元测试**和 **98 个 Adapter 功能测试**；
-- 98 个功能测试中，**19 个来自 dbt 官方 Adapter 合约**，**79 个为 Doris 专项测试**；
-- 当前 Incremental 文件可收集 **36 个测试**；
-- 新失败边界测试及其五版本正式执行证据绑定干净提交
-  `7f6d9701140188f347e9f68a25ef9013551e4e48`：327 个单元测试
-  通过；每个 Doris 版本均有 98 个全量功能测试和 36 个 Incremental 聚焦测试
-  通过，且精确版本门禁与清理审计通过；
-- Incremental 的目标表模型/物理 Key 前置校验、Schema Change 冻结批次失败重试、
-  Schema Change 超时以及 View Snapshot 后 Replacement/Pre-hook 失败重试已进入
-  当前发布证据，详细结果见专项测试方案；
-- 官方测试下一阶段优先补齐 seed、snapshot、grants、persist docs、constraints、
-  unit testing、catalog、hooks 和 relations。
+- 当前功能实现基线 `7a362c89d234c0f3e6d4798a523ef7a05a57e163` 可收集
+  **314 个单元测试**和 **142 个 Adapter 功能测试**；当前 Incremental 文件仍为
+  **36 项**；
+- 当前 Async MV 直接相关清单为 **22 个 Functional Item + 124 个 Unit/Adapter
+  Item**。两组都已在 Doris 4.1.3 对应基线上通过，精确命令、日志、清理结果和
+  历史五版本边界见 MV 专项测试文档；
+- 合入前分支提交 `79ad341eb5f48f4c8697d66c5a0281f17dae02bd` 与当前 main
+  具有相同 Git Tree；该内容的完整 Unit Suite 为 `314 passed`，Doris 4.1.3
+  完整 Functional Suite 为 `142 passed`。执行时工作树另有无关的未提交文档差异，
+  因此该结果作为相同运行时代码的回归证据，不标记为 clean release run；
+- `7f6d9701140188f347e9f68a25ef9013551e4e48` 上的 `327 Unit / 98 Functional /
+  36 Incremental` 五版本矩阵，以及 `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`
+  上的 `21 Async MV × 5`，均保留为历史发布证据，不能写成当前代码的收集数量；
+- 当前 142 个 Functional Item 按第 4.2 节口径分为 **54 个官方合约 Item +
+  88 个 Doris 专项 Item**；新增或改写继承关系后必须重新审计，不能继续沿用历史的
+  `19 官方 + 79 专项` 拆分。
 
 测试执行结果应另存结果报告：方案文档只定义应如何测试，结果报告记录某个精确提交实际
 执行了什么以及是否通过。

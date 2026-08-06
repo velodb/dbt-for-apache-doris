@@ -12,14 +12,14 @@ dbt Labs release.
 | Component | Development or test baseline |
 | --- | --- |
 | dbt Core | 1.12.x; final matrix ran on 1.12.0 |
-| Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the final CTAS-snapshot, durable-marker, and pre-model-ordering implementation |
+| Historical Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the recorded CTAS-snapshot, durable-marker, and pre-model-ordering baseline |
 | Historical mixed-cluster Functional run | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed, but not official-release compatibility evidence |
 | Doris Async MV gate unit tests | Mocked version strings for 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
 | Python | 3.10 or newer; final matrix ran on 3.12.13 |
 | Database protocol | Doris MySQL protocol |
 
-The release-candidate E2E matrix is deliberately pinned to exact public
-artifacts:
+The historical release-candidate E2E matrix is deliberately pinned to exact
+public artifacts:
 
 | Doris release | Exact FE/BE Version | Complete Functional | Focused Incremental | Focused Async MV | State |
 | --- | --- | --- | --- | --- | --- |
@@ -29,7 +29,13 @@ artifacts:
 | 4.0.7 | `doris-4.0.7-rc02-35854e7e92a` | 98 passed, 106 warnings, 138.82s | 36 passed, 27 warnings, 39.69s | 21 passed, 105.94s | Passed |
 | 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 98 passed, 106 warnings, 135.13s | 36 passed, 27 warnings, 39.48s | 21 passed, 109.19s | Passed |
 
-Here, `Passed` means that the exact release completed the recorded 98-test
+The current implementation baseline `7a362c8` has a separate clean Doris 4.1.3
+record: all 22 current Async MV Functional items and all 124 directly related
+Unit/Adapter items passed. The other four releases have not yet rerun the added
+MV Grants case, so the table remains historical rather than being relabeled as a
+current 22-case matrix.
+
+Here, `Passed` means that the exact release completed the historical 98-test
 Functional suite, the 36-test focused Incremental suite, the 21-test focused
 Async MV suite, and the version and cleanup evidence checks. The Async MV suite
 ran the adapter lifecycle tests plus dbt Core's Materialized View basic
@@ -67,8 +73,8 @@ formal release evidence; the Functional and focused Incremental results above
 come from clean adapter commit
 `7f6d9701140188f347e9f68a25ef9013551e4e48` with `dirty=false`.
 
-Final local verification also recorded `327 passed, 9 warnings` in 57.99s for
-Unit tests; Flake8 and `git diff --check` passed. The final evidence environment
+Historical release-candidate verification also recorded `327 passed, 9 warnings`
+in 57.99s for Unit tests; Flake8 and `git diff --check` passed. That evidence environment
 used dbt Core 1.12.0, adapter 1.0.0, and Python 3.12.13. `python -m build`
 produced the `dbt_doris-1.0.0` sdist and wheel under
 `/tmp/dbt-doris-package-clean.tUhMxp`. The 75,660-byte wheel has SHA-256
@@ -381,9 +387,9 @@ out of scope.
 
 The complete configuration and lifecycle guide is available in
 [docs/materialized-view.zh-CN.md](docs/materialized-view.zh-CN.md). The
-[Async MV test record](docs/materialized-view-test-plan.zh-CN.md) lists all 21
-live-Doris cases, the five-version execution procedure, results, and explicit
-coverage gaps. The
+[Async MV test record](docs/materialized-view-test-plan.zh-CN.md) lists all 22
+current live-Doris cases and 124 directly related unit/adapter items, plus the
+historical 21-case five-version procedure, results, and explicit coverage gaps. The
 [implementation TODO](docs/dbt-doris-todo-list.zh-CN.md) and
 [#65967 acceptance requirements](docs/dbt-doris-issue-65967-async-materialized-view-requirements.zh-CN.md)
 record the delivered scope and remaining adapter work.

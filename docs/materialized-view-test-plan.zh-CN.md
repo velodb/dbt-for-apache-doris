@@ -1,8 +1,36 @@
 # dbt-doris 异步物化视图专项测试说明与执行记录
 
+本文档同时记录两类信息：
+
+- **当前测试清单**：以功能实现基线 `7a362c89d234c0f3e6d4798a523ef7a05a57e163`
+  为准，共有 22 个真实 Doris Functional Item 和 124 个直接相关 Unit/Adapter
+  Item，合计 146 个；
+- **历史多版本证据**：以 `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`
+  为准，在五个 Doris 版本上执行当时的 21 个 Functional Item，共 105 次通过。
+
+本文的“Item”指 pytest 完成参数化展开后实际收集到的测试节点。只把直接验证异步
+MV 行为的测试计入清单；共享的 Relation Namespace 等通用测试不重复计入。测试计划、
+当前单版本执行和历史多版本证据分别列示，不能互相替代。
+
 ## 1. 被测代码与环境
 
-### 1.1 被测代码
+### 1.1 当前测试清单与定向执行基线
+
+| 项目 | 值 |
+| --- | --- |
+| Adapter Git SHA | `7a362c89d234c0f3e6d4798a523ef7a05a57e163` |
+| 测试开始时工作树 | `dirty=false` |
+| Adapter 包版本 | `dbt-doris 1.0.0` |
+| dbt Core | `1.12.0` |
+| Python | `3.12.13` |
+| pytest | `9.1.1` |
+| Doris FE/BE | `doris-4.1.3-rc02-7126cf65d96` |
+
+本次定向执行使用当前 main 的干净工作树。本文档自身的后续文档提交不改变运行时代码
+或测试逻辑；如果 MV Adapter、Macro 或本文列出的测试文件发生变化，必须重新收集并
+执行清单。
+
+### 1.2 历史五版本证据基线
 
 | 项目 | 值 |
 | --- | --- |
@@ -13,11 +41,10 @@
 | Python | `3.11.15` |
 | pytest | `8.4.2` |
 
-后续提交到当前分支的内容没有修改 MV Adapter 源码、MV Macro、三个 MV
-Functional 文件或 `test/unit/test_materialized_view.py`，因此本报告仍对应当前
-MV 实现；如果以后这些文件发生变化，必须重新执行本测试。
+该历史批次早于 MV Grants Functional Case 及其相关实现，不代表当前 22 个
+Functional Item 已在五个版本上全部执行。
 
-### 1.2 Doris 集群形态
+### 1.3 历史五版本 Doris 集群形态
 
 每个版本都重新解压官方二进制包并启动一套隔离集群：
 
@@ -37,16 +64,56 @@ MV 实现；如果以后这些文件发生变化，必须重新执行本测试�
 版本开始测试前都要求 `SHOW FRONTENDS` 和 `SHOW BACKENDS` 中的节点
 `Alive=true`，且 FE/BE 完整 Version 一致。
 
-## 2. 测试入口与用例数量
+## 2. 当前测试入口与数量
 
-五个版本都执行相同的三个文件：
+### 2.1 完整清单
 
-| 文件 | 来源 | pytest Case 数 |
+| 文件或 Selector | 类型 | pytest Item 数 |
 | --- | --- | ---: |
 | `test_doris_materialized_view.py` | dbt-doris Doris 专项生命周期测试 | 11 |
 | `test_doris_materialized_view_basic.py` | 继承 dbt Core `MaterializedViewBasic` 官方合约 | 8 |
 | `test_doris_materialized_view_complete.py` | dbt-doris Docs、Source、Alias、Schema 补充测试 | 2 |
-| **合计** |  | **21** |
+| `test_doris_grants.py::TestDorisMaterializedViewGrants` | dbt-doris MV Grants 测试 | 1 |
+| **Functional 小计** |  | **22** |
+| `test/unit/test_materialized_view.py` | MV Macro、生命周期和 Adapter 单元测试 | 119 |
+| `test/unit/test_adapter_config.py` | MV 配置数据契约测试 | 4 |
+| `test/unit/test_relation.py::test_materialized_view_to_view_replacement_updates_one_cache_key` | MV Relation Cache 测试 | 1 |
+| **Unit/Adapter 小计** |  | **124** |
+| **当前直接相关测试合计** |  | **146** |
+
+`test/unit/test_relation.py` 还有 4 个参数化 Item 验证通用 Doris Database/Schema
+Namespace；它们会在完整 Unit Suite 中执行，但不直接验证 MV，因此不计入上述 146 项。
+
+### 2.2 精确执行命令
+
+Functional 只能选择 Grants 文件中的 MV Class；直接执行整个 `test_doris_grants.py`
+会额外收集 5 个非 MV Grants Item：
+
+```bash
+DORIS_TEST_HOST=127.0.0.1 \
+DORIS_TEST_PORT=9030 \
+DORIS_TEST_USER=root \
+DORIS_TEST_PASSWORD='' \
+DORIS_TEST_SCHEMA=dbt_adapter_mv_record_e2e \
+DORIS_TEST_REPLICATION_NUM=1 \
+DORIS_TEST_EXPECTED_VERSION=4.1.3 \
+PYTHONPATH=. python -m pytest -q \
+  test/functional/adapter/test_doris_materialized_view.py \
+  test/functional/adapter/test_doris_materialized_view_basic.py \
+  test/functional/adapter/test_doris_materialized_view_complete.py \
+  test/functional/adapter/test_doris_grants.py::TestDorisMaterializedViewGrants
+```
+
+直接相关 Unit/Adapter 测试：
+
+```bash
+PYTHONPATH=. python -m pytest -q \
+  test/unit/test_materialized_view.py \
+  test/unit/test_adapter_config.py \
+  test/unit/test_relation.py::test_materialized_view_to_view_replacement_updates_one_cache_key
+```
+
+把 `-q` 替换为 `--collect-only -q`，可以核对完整 Node ID 与本文统计是否一致。
 
 ## 3. E2E 使用的 Doris 观测面
 
@@ -75,12 +142,13 @@ WHERE table_schema = '<schema>'
 另外通过 Adapter `list_relations_without_caching` 验证 dbt 看到的真实 Relation
 Type，通过普通 `SELECT` 验证 MV 聚合数据，而不是仅检查 DDL 字符串。
 
-Refresh Task 的测试识别方法是：动作前读取已有 `TaskId` 集合，提交 Create 或
-Refresh 后查询 `tasks('type'='mv')`，选择不在旧集合里的新任务，并等待状态离开
-`PENDING/RUNNING`。Functional Test 只有在新任务最终为 `SUCCESS` 时通过；故意
-制造的失败任务必须为 `FAILED` 且带有预期错误。
+Refresh Task 的测试识别方法是：动作前读取已有 `TaskId` 集合；提交 Create 或
+Refresh 后，每轮查询 `tasks('type'='mv')`，选择不在旧集合中且按
+`CreateTime DESC, TaskId DESC` 排在最前的任务，再读取其状态。当前实现不会锁定首次
+观察到的 TaskId。Functional Test 只有在所选任务最终为 `SUCCESS` 时通过；故意制造
+的失败任务必须为 `FAILED` 且带有预期错误。
 
-## 4. 21 个真实 Doris Functional Case
+## 4. 当前 22 个真实 Doris Functional Case
 
 ### 4.1 dbt-doris 生命周期专项：11 个
 
@@ -273,7 +341,66 @@ Seed 并用 `--full-refresh` 建立干净 MV，结束后重建测试 Schema。
   和依赖关系与运行结果一致。
 - 清理：Case 结束时强制删除自定义 Schema 并清理 Adapter Cache。
 
+### 4.4 Grants：1 个
+
+#### MV-E2E-022：授权变更、定义替换与重复运行
+
+- pytest：`TestDorisMaterializedViewGrants::test_grants_update_without_rebuilding_the_materialized_view`
+- 初始运行：创建 `BUILD DEFERRED` MV，并把 `SELECT` 授给第一个测试用户。
+- Grants 变更：把授权对象改为第二个测试用户，再次运行同一模型。
+- 断言：第一个用户的直接授权被回收，第二个用户获得直接 `SELECT`。
+- 定义变更：修改模型 SQL 后再次运行，再验证第二个用户的 `SELECT` 仍存在。
+- 重复运行：定义和 Grants 都不变时再次运行。
+- 断言：运行日志不再出现重复的 `GRANT` 或 `REVOKE`。
+- 证据边界：该 Case 直接验证 Grants 状态和运行日志，没有比较 Grants-only 或 SQL
+  变更运行前后的 MV Id；因此本文不把它单独作为“对象一定未重建”或“必然执行
+  Replace”的证据。定义 Replace 本身由 MV-E2E-002 验证。
+
 ## 5. 实际执行结果
+
+### 5.1 当前 main 定向结果
+
+以下结果直接在功能实现基线 `7a362c89d234c0f3e6d4798a523ef7a05a57e163`
+的干净工作树执行：
+
+| 范围 | 环境 | 结果 | 耗时 |
+| --- | --- | ---: | ---: |
+| 当前 22 个 MV Functional Item | Doris `4.1.3`、dbt Core `1.12.0`、Python `3.12.13` | 22 passed | 56.54s |
+| 当前 124 个 MV Unit/Adapter Item | dbt Core `1.12.0`、Python `3.12.13` | 124 passed | 23.00s |
+| **当前直接相关清单合计** |  | **146 passed** | — |
+
+Functional 日志同时记录 FE/BE 都是
+`doris-4.1.3-rc02-7126cf65d96`、节点 `Alive=true`、当前连接 FE 是 Master，版本
+Gate 为 passed。22 项产生的 22 个 Warning 都是 pytest 对 Class-scoped Instance
+Fixture 的弃用提醒；124 项产生的 9 个 Warning 都来自 Logbook 的 datetime 弃用
+提醒，不是测试 Skip 或 Xfail。
+
+本次原始日志保存在：
+
+```text
+/mnt/disk1/chenjunwei/dbt-doris-mv-version-e2e/evidence/current-main-7a362c8/
+├── evidence-manifest.txt         # 完整命令、Selector、Cleanup SQL 和文件说明
+├── environment.log               # Git、Python、dbt、pytest、FE/BE 版本和 Alive 状态
+├── collection.log                # 带范围标签的全量与 MV 定向收集数量
+├── mv-functional-collection.log  # 当前 22 个 Functional Node ID
+├── mv-unit-collection.log        # 当前 124 个 Unit/Adapter Node ID
+├── mv-functional.log             # 22 项执行结果及 Version Evidence JSON
+├── mv-unit.log                   # 124 项执行结果
+├── cleanup.log                   # Endpoint、Cleanup SQL、Schema 残留数 0
+└── checksums.sha256              # 上述八个证据文件的 SHA-256
+```
+
+合入前的分支提交 `79ad341eb5f48f4c8697d66c5a0281f17dae02bd` 还执行了完整
+Unit Suite `314 passed` 和 Doris 4.1.3 完整 Functional Suite `142 passed`。该次
+工作树另有一项与运行时代码和测试无关、未提交的 Incremental 文档差异，因此不把它
+称为 clean run；提交本身与 main 的 `7a362c8` 具有相同 Git Tree
+`2bdcbead666d01673e276fd3634526757497eeda`；这里把它作为相同代码内容的全套回归
+证据，不误写成直接在 Merge Commit 上执行。
+
+### 5.2 历史五版本结果
+
+以下矩阵来自历史基线 `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`。每个版本
+执行当时的 21 项套件，不包含 MV-E2E-022 Grants Case：
 
 | Doris | FE/BE 完整 Version | 结果 | Skip | 耗时 |
 | --- | --- | ---: | ---: | ---: |
@@ -284,67 +411,183 @@ Seed 并用 `--full-refresh` 建立干净 MV，结束后重建测试 Schema。
 | 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 21 passed | 0 | 109.19s |
 | **合计** |  | **105 passed** | **0** | **560.59s** |
 
-每个版本的证据目录都包含：
+每个版本的历史证据目录都包含：
 
 ```text
 /mnt/disk1/chenjunwei/dbt-doris-mv-version-e2e/evidence/<version>/
 ├── environment.log       # Git、Python、dbt、pytest、FE/BE 版本和 Alive 状态
-├── mv-functional.log     # 21 个 Case 的逐项结果及 Version Evidence JSON
+├── mv-functional.log     # 历史 21 个 Case 的逐项结果及 Version Evidence JSON
 └── cleanup.log           # 对应测试 Schema 前缀的残留检查
 ```
 
 ## 6. 清理验证
 
-pytest 完成后，每个版本重新启动其 FE 元数据并执行：
+当前 Doris 4.1.3 定向测试完成后执行：
+
+```sql
+SHOW DATABASES LIKE 'dbt_adapter_mv_record_e2e%';
+```
+
+返回 0 行。历史五版本批次则分别执行：
 
 ```sql
 SHOW DATABASES LIKE 'dbt_adapter_mv_<version>_e2e%';
 ```
 
-五个版本的返回行数均为 0。检查完成后关闭 FE；之前运行 pytest 的 FE/BE 也都已
-关闭。该结论只针对本专项测试创建的 Schema，不表示扫描或删除机器上其他用户的
-Doris 数据。
+五个版本的返回行数也均为 0。历史检查完成后关闭对应 FE/BE。以上结论只针对专项
+测试创建的 Schema，不表示扫描或删除机器上其他用户的 Doris 数据。
 
-## 7. 单元测试补充覆盖
+## 7. 当前 124 个 Unit/Adapter Item 完整清单
 
-真实 Doris E2E 之外，还执行：
+### 7.1 文件与覆盖分组
 
-```bash
-PYTHONPATH=/tmp/dbt-doris-adapter \
-python -m pytest -q test/unit/test_materialized_view.py
-```
+| 范围 | Test Function | pytest Item | 覆盖 |
+| --- | ---: | ---: | --- |
+| `test_materialized_view.py` | 62 | 119 | SQL/Hash/动作/Docs 26，生命周期/Task/Hook/Grants/恢复/类型切换 24，DDL 配置 54，Relation/版本/Drop/Rename 15 |
+| `test_adapter_config.py` | 4 | 4 | 字段注册、默认值、完整配置反序列化、Schedule 类型校验 |
+| `test_relation.py` MV Selector | 1 | 1 | MV → View 时 Relation Cache 只保留一个 Key |
+| **合计** | **67** | **124** |  |
 
-结果为 `118 passed in 38.23s`。文件中有 61 个 Test Function，其中参数化输入被
-pytest 展开为 118 个 Item。它们补充覆盖：
-
-- Create/Refresh/Drop/Rename/Atomic Replace SQL 的精确渲染；
-- Definition Hash、Pending Marker、Docs、Identifier 和配置规范化；
-- Immediate/Deferred、Manual/Schedule/Commit 的动作选择；
-- Pre-hook Ordering、Post-hook Pending、Replace/Type Switch 恢复；
-- `wait_for_refresh=false`、Task 从 Running 到 Success、Failed Task，以及新 Task
-  不出现时的超时；
-- replication、partition、distribution、refresh、build 等合法/非法配置；
-- MV Relation Listing、Catalog Type、缺失 Schema；
-- FE 版本解析、Connected/Master FE 选择和版本 Gate。
-
-这些是无真实 Doris 的单元测试，不计入第 5 节的 105 个版本 E2E 结果。
-
-## 8. 版本通过标准与结论
-
-一个 Doris 版本只有同时满足以下条件，才能加入 MV “已验证版本”表：
-
-1. FE/BE 完整 Version 与目标发行版一致且全部 `Alive=true`；
-2. dbt Core 1.12 环境实际收集到 21 个 MV Functional Case；
-3. 21 个 Case 全部 Pass，没有 Skip/Xfail/重跑后通过；
-4. pytest 退出码为 0；
-5. 测试 Schema 残留为 0，隔离进程已关闭；
-6. 日志能追溯到精确 Adapter Git SHA。
-
-按上述标准，当前已验证的精确 Doris 版本是：
+其中配置注册测试还明确确认已删除的 `refresh_on_run` 和 `refresh_partitions` 不会重新
+进入 dbt Model Config。以下清单按“展开 Item 数 + Test Function”记录全部 67 个
+直接相关 Test Function；参数化明细可用第 2.2 节的 `--collect-only -q` 命令展开：
 
 ```text
-2.1.11、3.0.8、3.1.4、4.0.7、4.1.3
+# test/unit/test_materialized_view.py：62 functions / 119 items
+1  test_create_manual_materialized_view_uses_safe_defaults
+1  test_definition_hash_changes_with_model_sql_or_ddl_config
+12 test_materialized_view_action_is_idempotent_and_honors_change_policy
+1  test_materialized_view_change_policy_can_fail_the_run
+1  test_definition_match_reads_the_hash_from_show_create
+3  test_manual_refresh_sql_uses_the_configured_refresh_method
+1  test_core_materialized_view_dispatch_helpers_use_doris_ddl
+1  test_replace_sql_uses_doris_atomic_materialized_view_swap
+1  test_deployment_complete_sql_replaces_the_pending_hash_marker
+1  test_relation_description_is_persisted_only_when_relation_docs_are_enabled
+1  test_column_descriptions_are_rendered_in_create_materialized_view
+1  test_column_description_changes_the_hash_only_when_column_docs_are_enabled
+1  test_column_doc_quote_semantics_are_part_of_the_definition_hash
+1  test_materialization_first_immediate_run_builds_before_exposing_the_target
+1  test_materialization_first_deferred_run_creates_the_target_without_waiting
+1  test_unchanged_manual_materialized_view_refreshes_and_waits
+2  test_unchanged_database_triggered_materialized_view_is_a_no_op
+1  test_outside_pre_hook_runs_before_show_create_definition_inspection
+1  test_invalid_grants_fail_before_definition_inspection_or_target_ddl
+1  test_materialization_definition_change_builds_then_atomically_swaps
+1  test_materialization_does_not_swap_when_immediate_build_fails
+1  test_wait_for_refresh_can_be_explicitly_disabled
+1  test_manual_refresh_can_submit_without_waiting_for_the_task
+1  test_wait_for_refresh_reports_when_the_new_task_never_appears
+1  test_materialization_removes_a_stale_intermediate_before_recovery
+1  test_pending_replace_rolls_back_preserved_old_mv_before_retrying
+1  test_materialization_restores_a_backup_before_retrying_a_type_switch
+1  test_failed_inside_post_hook_leaves_the_deployment_marker_pending
+2  test_pending_deployment_forces_recovery_before_change_policy
+1  test_pending_type_switch_backup_is_retained_until_recovery_completes
+1  test_materialization_full_refresh_replaces_even_with_continue_policy
+2  test_materialization_replaces_a_different_relation_type
+1  test_table_materialization_preserves_existing_mv_until_table_is_ready
+1  test_view_materialization_drops_an_existing_mv_through_the_adapter
+1  test_create_scheduled_materialized_view_renders_doris_options_in_order
+1  test_top_level_replication_num_is_rendered_as_a_materialized_view_property
+1  test_top_level_replication_num_overrides_and_merges_with_properties
+1  test_top_level_replication_num_changes_the_materialized_view_definition_hash
+1  test_replication_num_integer_and_trimmed_string_are_canonical
+1  test_equivalent_identifier_and_bucket_configs_have_one_definition_hash
+1  test_single_partition_list_matches_string_in_sql_and_definition_hash
+4  test_partition_list_requires_exactly_one_non_empty_string
+6  test_partition_by_accepts_identifier_and_function_call_shapes
+7  test_partition_by_rejects_non_identifier_or_function_call
+1  test_create_on_commit_materialized_view_renders_doris_trigger
+1  test_create_schedule_rejects_test_only_seconds
+1  test_create_sql_escapes_comments_properties_and_identifiers
+1  test_invalid_build_mode_fails_before_sql_execution
+8  test_invalid_refresh_config_fails_before_sql_execution
+5  test_invalid_distribution_config_fails_before_sql_execution
+12 test_invalid_ddl_config_fails_before_sql_execution
+1  test_grants_are_valid_materialized_view_config
+1  test_relation_listing_queries_async_materialized_view_metadata
+1  test_catalog_reports_async_materialized_views_as_materialized_views
+1  test_relation_listing_returns_empty_when_schema_does_not_exist
+1  test_adapter_maps_async_materialized_views_to_the_dbt_relation_type
+5  test_materialized_view_version_contract_accepts_configured_gate_versions
+2  test_materialized_view_version_contract_rejects_versions_outside_gate
+1  test_materialized_view_version_contract_uses_the_connected_frontend
+1  test_materialized_view_version_contract_also_validates_master_frontend
+1  test_drop_async_materialized_view_uses_doris_two_word_relation_type
+1  test_rename_async_materialized_view_uses_doris_ddl
+
+# test/unit/test_adapter_config.py：4 functions / 4 items
+1  test_doris_config_registers_materialized_view_fields_with_dbt
+1  test_doris_config_materialized_view_defaults_match_macros
+1  test_doris_config_accepts_complete_materialized_view_configuration
+1  test_doris_config_refresh_schedule_must_be_a_mapping
+
+# test/unit/test_relation.py：仅列直接相关 Selector，1 function / 1 item
+1  test_materialized_view_to_view_replacement_updates_one_cache_key
 ```
 
+## 8. Refresh Task 测试边界
+
+### 8.1 当前已经覆盖
+
+当前 Doris `REFRESH MATERIALIZED VIEW` 通过 MySQL Protocol 返回 OK，不直接返回
+TaskId。Adapter 的现有实现先读取该 MV 的旧 TaskId 集合并提交 Refresh；等待期间
+每轮重新扫描该 MV 的全部 Task，再选择旧集合之外排序最前的任务读取状态。当前测试
+覆盖：
+
+- Manual 定义未变时由 `dbt run` 提交 Refresh；Schedule/Commit 由 Doris 管理；
+- `wait_for_refresh=true` 等待新 Task 出现并轮询到 Success；
+- Running、Failed、Task 未出现超时，以及 `wait_for_refresh=false` 只提交不等待；
+- Build/Refresh 失败时不发布错误的新定义，重试能够恢复。
+
+当前测试均为单线程，没有覆盖两个客户端对同一个 MV 并发 Refresh。因此“旧/新 TaskId
+集合差”不能作为并发场景下精确关联本次请求的保证；轮询期间还可能改选后来出现、排序
+更靠前的新任务。`SHOW LAST INSERT` 返回当前 Session 最近一次 Insert 的
+TransactionId，不是 MV Refresh TaskId，当前实现也没有使用它。
+
+### 8.2 待 Doris 提供精确 TaskId 接口后补测
+
+以下是未来验收项，不属于当前 146 个测试：
+
+1. 如果新增可选的 `REFRESH ... RETURNING TASK_ID`，不带选项的旧语句仍返回 OK；
+   带选项时 MySQL CLI、JDBC 和 Python DB-API 都能读取标准单行 ResultSet。
+2. 返回的 TaskId 必须能在 `tasks('type'='mv')` 中精确查到，并匹配目标 Catalog、
+   Database、MV 和本次 Refresh。
+3. 两个客户端并发刷新同一 MV 时，各自得到自己的 TaskId；Adapter 只轮询
+   `WHERE TaskId = <returned_id>`，不再依赖集合差。
+4. 覆盖 Success、Failed、Canceled、未知状态、Task 暂不可见、等待超时和提交失败；
+   提交失败不得返回或记录伪 TaskId。
+5. `wait_for_refresh=false` 仍应取得并写入 Adapter Response 中的 TaskId，只是不等待
+   任务结束。
+6. 连接 Follower/Observer 并由 FE 转发给 Master 时，TaskId 必须原样返回；连接池和
+   多 FE 场景不得串到其他请求。
+7. Adapter 需要对旧 Doris 做明确的版本/能力判断；若继续回退到集合差，文档和测试
+   必须保留其并发限制。
+8. 精确 Refresh TaskId 只解决已有 Manual MV 的 Refresh。`BUILD IMMEDIATE` 的
+   Create/Replace Build Task 仍需独立返回接口，否则该路径仍使用集合差。
+
+如果 Doris 最终采用 Session 级 `SHOW LAST MATERIALIZED VIEW REFRESH` 而不是
+ResultSet 返回，还必须增加“同一物理 Session、连续两次 Refresh、中间插入无关 SQL、
+连接池换连接和 FE 转发”测试。
+
+## 9. 版本通过标准与结论
+
+从当前清单开始，一个 Doris 精确版本只有同时满足以下条件，才能标记为“当前完整 MV
+测试清单已验证”：
+
+1. FE/BE 完整 Version 与目标发行版一致且全部 `Alive=true`；
+2. dbt Core 1.12 环境实际收集到当前 22 个 MV Functional Item；
+3. 22 项全部 Pass，没有 Skip、Xfail 或重跑后通过；
+4. 同一 Adapter Git Tree 实际收集到 124 个直接相关 Unit/Adapter Item，且全部通过；
+5. 两次 pytest 的退出码都为 0；
+6. 测试 Schema 残留为 0；
+7. 日志能追溯到精确 Adapter Git SHA、Git Tree 和环境版本。
+
+按该口径，当前 22 个 Functional Item 和 124 个 Unit/Adapter Item 已直接验证的
+精确 Doris 版本是 `doris-4.1.3-rc02-7126cf65d96`。2.1.11、3.0.8、3.1.4 和
+4.0.7 有历史 21 项 Functional 全通过证据，但尚未补跑新增的 MV Grants Case 和
+当前 Unit/Adapter 清单，不能写成当前 146 项已全部验证。
+
 这不自动证明所有更高版本都兼容。同一发行线的后续 Patch 版本可以视为预期兼容，
-但必须重新执行本文件的 21 个 Case 后，才能把该精确版本写成“已验证”。
+但必须重新执行当前 22 个 Functional Item 后，才能把该精确版本加入当前完整验证表。
