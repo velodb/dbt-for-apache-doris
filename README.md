@@ -65,8 +65,8 @@ rejected; use a Doris Unique Key target with `merge` for upsert semantics.
 Configuration, generated Doris SQL, staging behavior, migration notes, and the
 validation matrix are documented in
 [Incremental user guide](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental.zh-CN.md),
-[Incremental test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md),
-and [Incremental automated test inventory](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-inventory.zh-CN.md).
+[Incremental test documentation](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-tests.zh-CN.md),
+and [release test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md).
 
 To manage a Doris asynchronous materialized view, configure a model with
 `materialized='materialized_view'`:

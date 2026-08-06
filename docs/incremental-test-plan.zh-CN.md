@@ -20,7 +20,7 @@ Doris 在 `INSERT OVERWRITE` 内部创建临时分区、写 Rowset 或发布版�
 引擎实现，不计为 dbt-doris 的第二次物化。
 
 当前代码中逐项 pytest 节点、参数化分支和覆盖语义见
-[Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)。
+[Incremental 测试文档](incremental-tests.zh-CN.md)。
 
 ## 2. 测试基线与矩阵
 
@@ -123,7 +123,7 @@ Unit Test 不依赖 Doris，负责尽早发现：
 当前直接归属于 Incremental 的 Unit/Macro 共 112 case：106 个行为 case，加上
 三个 Incremental Macro 文件展开的 6 个解析与 License case；它们均包含在完整
 281 项 Unit 中。逐方法和参数分支见
-[Incremental 自动化测试清单](incremental-test-inventory.zh-CN.md)。
+[Incremental 测试文档](incremental-tests.zh-CN.md)。
 
 执行命令：
 

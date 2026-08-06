@@ -1,16 +1,17 @@
-# dbt-doris Incremental 自动化测试清单
+# dbt-doris Incremental 测试文档
 
-本文逐项记录当前 PR 中直接验证 Incremental 的自动化测试。测试目标、五版本矩阵、
-失败注入要求和历史执行证据仍以
-[Incremental 测试方案](incremental-test-plan.zh-CN.md) 为准；本文解决的是“当前
-代码里到底有哪些测试、每项测什么、pytest 实际收集多少 case”。
+本文记录当前代码中已经存在的 Incremental 自动化测试，逐项说明测试节点、参数
+分支、case 数和实际覆盖内容。它是当前测试现状文档，不是后续测试计划。
 
-清单于 2026-08-06 从分支 `agent/complete-incremental-strategies` 自动收集并人工
+五版本执行矩阵、失败注入要求和历史运行证据另见
+[Incremental 测试方案](incremental-test-plan.zh-CN.md)。
+
+本文于 2026-08-06 从分支 `agent/complete-incremental-strategies` 自动收集并人工
 核对。测试发生增删、重命名或参数变化时，必须同时更新本文和测试方案中的计数。
 
 ## 1. 收集口径
 
-直接 Incremental 清单使用以下命令：
+当前 Incremental 测试使用以下命令收集：
 
 ```bash
 python -m pytest --collect-only -q \
