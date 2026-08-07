@@ -1,67 +1,117 @@
-# dbt-doris Incremental 测试文档
+# dbt-doris Incremental 测试矩阵
 
-本文只回答三个问题：当前有哪些测试、测试了什么功能、这些测试怎么运行。
-表中的 case 数均为 pytest 参数化展开后的数量。
+本文只回答三个问题：测试矩阵是什么、测试了哪些功能、测试怎么执行。
 
-## 1. 当前测试矩阵
+## 1. 测试矩阵
 
-| 测试范围 | 主要用途 | 数量 | 最近结果 |
-| --- | --- | ---: | --- |
-| Incremental Unit / Macro | 配置校验、宏 SQL、Adapter Helper、UTC 边界、宏解析与 License | 112（106 行为 + 6 门禁） | 112 passed |
-| Incremental Functional | 在真实 Doris 上验证 Incremental 数据、DDL/DML、失败与重试 | 42 | 42 passed（本地开发集群） |
-| Table / View / Partition 共享回归 | 验证 Incremental 复用的 Relation 和 DDL 宏 | 12 | 12 passed（本地开发集群） |
-| 完整 Unit | 防止 Adapter 其他逻辑回归；包含上述 112 项 | 281 | 281 passed |
-| 完整 Adapter Functional | 防止其他物化与 Incremental 相互影响；包含上述 42 和 12 项 | 99 | 99 passed（本地开发集群） |
-| Doris 4.1.3 Microbatch 聚焦 | 从 42 项中单独运行 2 项，在正式版本上验证静态与 Dynamic Partition Microbatch | 2 | 2 passed；仅为聚焦证据，不代表 4.1.3 完整兼容 |
-| CI / Package | Python 3.10、Python 3.14、wheel/sdist 构建与检查 | 3 jobs | passed |
+### 1.1 当前测试数量
 
-这些范围存在包含关系，不能把数量直接相加。PR Head 的五个 Doris 正式版本完整
-矩阵仍待重跑；版本状态和历史证据见
-[Incremental 测试方案](incremental-test-plan.zh-CN.md)。
+| 层级 | 测试入口 | 主要内容 | pytest 用例数（参数展开后） |
+| --- | --- | --- | ---: |
+| Functional | `test_doris_incremental.py` | 四种策略、Schema Change、失败恢复、Full Refresh 和 View → Table | 42 |
+| Shared Functional | `test_doris_table.py`、`test_doris_view.py`、`test_doris_partition.py` | Incremental 复用的 Relation 和 DDL 宏 | 12 |
+| Unit/Adapter | `test/unit/test_incremental.py` | Schema Change、View Snapshot 和 Adapter Helper | 21 |
+| Unit/Macro | `test/unit/test_macro_behavior.py` 中的 Incremental Class/Case | 策略配置、生成 SQL、Microbatch 和 physical staging | 82 |
+| Unit/Adapter | `test/unit/test_adapter_api.py`、`test/unit/test_relation.py` 中的 Incremental Case | 策略接口、批次顺序和 UTC 边界 | 3 |
+| Unit/Gate | `test/unit/test_macro_syntax.py -k incremental` | 三个 Incremental Macro 的解析与 License | 6 |
+| **Unit/Adapter 小计** |  | **不连接 Doris** | **112** |
+| **直接 Incremental 合计** |  | **42 Functional + 112 Unit/Adapter** | **154** |
+| **含共享回归合计** |  | **直接 Incremental + 12 Shared Functional** | **166** |
 
-## 2. 功能测试矩阵
+当前代码的 112 项 Unit/Adapter 测试为 `112/112 passed`。完整 Unit 共 281 项，
+完整 Adapter Functional 共 99 项；它们包含上表中的子集，因此不再计入合计。
 
-| 功能 | 测试了什么 | 怎么测试 |
-| --- | --- | --- |
-| 默认路由与配置 | 无 `unique_key` 走 append，有 Key 走 merge；`delete+insert`、危险 overwrite、predicates 和 partial merge 配置提前失败 | Unit 覆盖路由和全部配置拒绝；Functional 对 `delete+insert` 和危险 overwrite 检查 Hook、DDL、DML 前失败 |
-| Append | 首次建表、后续追加、旧数据保留、keyless Duplicate Target | 真实运行两轮 dbt，检查结果数据和 SQLQuery 事件 |
-| Merge | MOW/MOR、单 Key、复合 Key、保留字 Key、批内重复 Key 原子失败 | Unit 检查单条 `INSERT INTO` SQL；Functional 检查更新、新增、保留和失败后目标不变 |
-| Sequence | 后到的低 Sequence 不覆盖已有高 Sequence；模型配置必须匹配物理 Sequence mapping | 真实 Doris 数据结果 + 目标表属性前置校验 |
-| Insert Overwrite | 整表覆盖、静态命名分区覆盖、动态 `PARTITION(*)`，未触达分区保持不变 | 捕获目标 `INSERT OVERWRITE`，查询各分区最终数据 |
-| Microbatch | hour/day/month/year 的精确 `[start,end)`、UTC-aware 转 Doris UTC-naive、顺序执行、静态分区创建、Dynamic Partition 解析、空批清空、lookback、Backfill、Full Refresh | Unit 覆盖四种粒度、UTC 和不声明并发能力；Functional 运行 day 多批并检查分区 SQL 和数据 |
-| 临时关系与写入次数 | 普通内置策略和 `on_schema_change='ignore'` 不使用物理 batch staging；非 ignore Schema Change、自定义策略使用 physical staging；Full Refresh 使用 physical intermediate | 捕获 SQLQuery 事件，统计 CTAS、目标 DML 和 Helper Relation |
-| Target Preflight | 目标表模型、物理 Key 或 Sequence 不匹配时禁止写入 | 参数化 Functional，确认 Hook、ALTER、Helper 和 DML 均未执行 |
-| Schema Change | `ignore`、`append_new_columns`、`sync_all_columns`、`fail`，VARCHAR 扩宽、Key 类型保护、异步 ALTER Job 等待 | dbt Core Contract 测试 + Adapter Unit + Doris Functional |
-| 失败与重试 | Pre/Post Hook、重复 Key、Schema DML、View Build/Rename 失败后的数据状态和 Helper 清理 | 注入确定性失败，再次运行并检查目标、Backup、Temp 是否收敛 |
-| Full Refresh 与 View → Table | 一次 intermediate CTAS、零二次 copy INSERT、元数据交换、旧 View Snapshot 和 Durable Backup Marker | 检查 SQL 顺序、Relation 类型、最终数据以及失败后的恢复行为 |
-| 自定义策略 | 自定义 Macro 读取 dbt 标准五参数，并通过冻结的物理 staging 读取批次 | Functional 实际读取五参数，并检查 staging 属性、结果和清理；Unit 的五参数兼容测试覆盖内置策略 |
+### 1.2 Doris 版本矩阵
 
-主要测试代码位于：
+| Doris | 当前套件：42 项，包含 Microbatch | 历史核心套件：36 项，不含 PR #2 后续边界 |
+| --- | ---: | ---: |
+| 2.1.11 | 未执行 | 36/36 passed |
+| 3.0.8 | 未执行 | 36/36 passed |
+| 3.1.4 | 未执行 | 36/36 passed |
+| 4.0.7 | 未执行 | 36/36 passed |
+| 4.1.3 | 完整 42 项未执行；Microbatch 2/2 passed | 36/36 passed |
 
-- `test/functional/adapter/test_doris_incremental.py`：42 项真实 Doris Functional；
-- `test/unit/test_incremental.py`：Schema Change、View Snapshot 和 Adapter Helper；
-- `test/unit/test_macro_behavior.py`：策略配置、SQL 和 staging；
-- `test/unit/test_adapter_api.py`、`test/unit/test_relation.py`：策略接口和 UTC 边界；
-- `test/unit/test_macro_syntax.py`：Incremental Macro 解析与 License。
+当前 42 项套件已在本地 Doris 开发集群通过，12 项 Shared Functional 和完整 99 项
+Adapter Functional 也已通过。正式版本矩阵中，4.1.3 目前只有两个 Microbatch
+Case 的当前代码聚焦证据；它不能代表完整 42 项通过。
 
-## 3. 怎么运行
+## 2. Functional 测试了什么
 
-### 3.1 Unit 和 Macro
+| Case | 功能 | 怎么测试 | 主要通过条件 |
+| --- | --- | --- | --- |
+| INC-001/002/010 | 默认路由和 Append | 分别运行无 Key、有 Key模型；首次建表后再次追加；另测 keyless Duplicate Target | 无 Key → append，有 Key → merge；Append 保留旧行、加入新行；普通运行无 physical staging |
+| INC-020—026 | Merge、Key 和 Sequence | 在 MOW/MOR 上运行单 Key、复合 Key、保留字 Key、重排列 Key、重复 Key 和 Sequence 数据 | 只执行一条目标 `INSERT INTO`；Upsert 结果正确；重复 Key 原子失败；低 Sequence 不覆盖高 Sequence |
+| INC-028/044 | Target Preflight | 构造策略、物理 Key 或 Sequence mapping 不匹配的已有目标表 | 在 Hook、ALTER、Helper 和 DML 前失败；目标 DDL、数据不变 |
+| INC-030—032 | Insert Overwrite | 分别执行整表、静态命名分区和动态 `PARTITION(*)` 覆盖 | 整表旧行被替换；静态只改命名分区；动态只改本批触达分区；无 physical staging |
+| INC-034—036/038—039 | Microbatch | 对静态和 Dynamic Partition 运行多批、空批、lookback、Backfill 和 Full Refresh | 每批覆盖精确命名分区；空批清空旧行；其他分区不变；Dynamic 模式不手动 ADD |
+| INC-040—041 | 废弃或危险配置 | 配置 `delete+insert`，以及 `insert_overwrite + unique_key` | 在 Hook、Helper、DDL 和 DML 前失败；提示改用 merge 或删除 Key |
+| INC-050—055 | Schema Change | 运行 `ignore`、`append_new_columns`、`sync_all_columns`、`fail`，并测试 VARCHAR 扩宽、Key 类型和大小写变化 | 安全变更成功；物理 Key 类型变化提示 Full Refresh；`fail` 不改变目标；只改大小写不误发 Add/Drop |
+| INC-056 | Schema Change 失败与重试 | physical staging 冻结批次后执行 ALTER，再注入目标 DML 失败并重试 | staging → ALTER/等待 → DML 顺序正确；失败时目标不部分写入；重试先替换陈旧 staging、不重复 ALTER，并清理 Helper |
+| INC-060 | Full Refresh | 对已有 Incremental Table 执行 `--full-refresh` 并捕获 SQL | 只执行一次 intermediate CTAS、零二次 copy INSERT、一次元数据交换；配置和数据正确 |
+| INC-061 | View → Table | 先创建 View，再改成 Incremental Table | 已有 View 成功替换为 Incremental Table；最终 Relation 类型、数据正确且 Helper 清理 |
+| INC-062/063/072 | Durable Marker 和恢复 | Canonical 缺失时保留 Backup，注入失败后再次运行 | 失败期间不触碰 Backup；成功完整构建后才清理；陈旧 Temp/Intermediate 最终清理 |
+| INC-065/067/069/073 | View Snapshot 失败边界 | 注入 Snapshot CTAS、Replacement Build、Pre-hook、Rename 失败，并切换 Session SQL Mode | 旧 View 或 Snapshot 数据不丢失；新模型 Header/DDL 不提前执行；修正后 Retry 收敛且无 Helper 残留 |
+| INC-071 | Hook 失败 | 分别注入 Pre-hook 和 Post-hook 失败，再重试 | Pre-hook 失败零写入；Post-hook 失败后 DML 已可见；重试先清理并收敛 |
+| INC-080 | 自定义策略 | 自定义 Macro 读取 dbt 标准五参数，并从冻结的 physical staging 读取批次 | staging 为 keyless Duplicate + RANDOM/AUTO；结果正确；成功后 Helper 清理 |
 
-完整 Unit 不需要 Doris：
+## 3. Unit/Adapter 测试了什么
+
+| 范围 | Item 数 | 主要内容 |
+| --- | ---: | --- |
+| Python Helper | 21 | Doris 类型、Schema 比较、View Snapshot、Alter Job 等待与超时 |
+| 策略配置校验 | 52 | 默认路由、四种策略、Key/Sequence、Microbatch 和危险配置 |
+| 策略 SQL | 27 | 单语句写入、重复 Key Guard、Overwrite、Microbatch 分区和标准参数契约 |
+| Adapter、UTC、Staging | 6 | 策略允许列表、顺序批次、UTC-naive 边界和 physical staging 属性 |
+| Macro 解析与 License | 6 | `incremental.sql`、`help.sql`、`strategies.sql` |
+| **合计** | **112** |  |
+
+## 4. 怎么测试
+
+### 4.1 执行 Functional
 
 ```bash
-python -m pytest -q test/unit
+DORIS_TEST_HOST=127.0.0.1 \
+DORIS_TEST_PORT=9030 \
+DORIS_TEST_USER=root \
+DORIS_TEST_PASSWORD='' \
+DORIS_TEST_SCHEMA=dbt_adapter_incremental_e2e \
+DORIS_TEST_REPLICATION_NUM=1 \
+DORIS_TEST_EXPECTED_VERSION=4.1.3 \
+PYTHONPATH=. python -m pytest -q \
+  test/functional/adapter/test_doris_incremental.py
 ```
 
-Unit 通过 Jinja 宏渲染、Mock Adapter 元数据和确定性时钟检查生成 SQL、配置错误、
-Schema Job 状态与时间边界。
+Functional 测试不是只看 `dbt run` 是否成功，还会直接查询 Doris：
 
-<details>
-<summary>只运行 112 个 Incremental Unit / Macro case</summary>
+```sql
+SHOW CREATE TABLE <schema>.<table>;
+
+SELECT partition_name, partition_method, partition_expression,
+       partition_description
+FROM information_schema.partitions
+WHERE table_schema = '<schema>' AND table_name = '<table>';
+
+SELECT table_name, table_type
+FROM information_schema.tables
+WHERE table_schema = '<schema>';
+
+SHOW ALTER TABLE COLUMN FROM <schema>
+WHERE TableName = '<table>' ORDER BY JobId DESC;
+```
+
+每个 Case 根据需要检查：
+
+1. 目标数据、Relation 类型、Key、Distribution、Sequence 和 Doris DDL；
+2. 分区名称、边界，以及整表/静态/动态/Microbatch 的覆盖范围；
+3. SQLQuery 事件中的 CTAS、目标 DML 数量和执行顺序；
+4. 普通策略是否没有 physical staging，冻结批次场景是否正确使用 staging；
+5. 故障后目标和 Backup 是否保留、能否重试；
+6. `__dbt_tmp`、`__dbt_backup`、Intermediate 和测试 Schema 是否清理。
+
+### 4.2 执行 Unit/Adapter
 
 ```bash
-python -m pytest -q \
+PYTHONPATH=. python -m pytest -q \
   test/unit/test_incremental.py \
   test/unit/test_macro_behavior.py::TestIncrementalStrategyValidation \
   test/unit/test_macro_behavior.py::TestIncrementalStrategySql \
@@ -72,52 +122,21 @@ python -m pytest -q \
   test/unit/test_adapter_api.py::test_microbatch_batches_remain_sequential \
   test/unit/test_relation.py::test_event_time_filter_renders_utc_as_naive_doris_datetime
 
-python -m pytest -q test/unit/test_macro_syntax.py -k incremental
+PYTHONPATH=. python -m pytest -q \
+  test/unit/test_macro_syntax.py -k incremental
 ```
 
-</details>
+把 `-q` 改成 `--collect-only -q`，可以核对实际收集数量和 Node ID。
 
-### 3.2 Doris Functional
+## 5. 结论
 
-先准备隔离的 Doris 测试 Schema：
+多版本测试使用 `1 FE + 1 BE`、`replication_num=1`，未覆盖多 FE/BE 拓扑。
 
-```bash
-export DORIS_TEST_HOST=127.0.0.1
-export DORIS_TEST_PORT=9030
-export DORIS_TEST_USER=root
-export DORIS_TEST_PASSWORD=''
-export DORIS_TEST_SCHEMA=dbt_incremental_test
-export DORIS_TEST_REPLICATION_NUM=1
-export DORIS_TEST_EXPECTED_VERSION=3.0.8  # 改成当前目标版本
-```
+Microbatch Functional 当前验证 day 粒度的静态和 Dynamic Partition 多批路径；
+hour、month、year 的 Batch ID 和边界由 Unit 覆盖。Adapter 明确不声明 Microbatch
+并发能力，所有批次顺序执行。
 
-然后运行：
-
-```bash
-# 42 项 Incremental 聚焦测试
-python -m pytest -q test/functional/adapter/test_doris_incremental.py
-
-# 12 项共享 DDL/Relation 回归
-python -m pytest -q \
-  test/functional/adapter/test_doris_table.py \
-  test/functional/adapter/test_doris_view.py \
-  test/functional/adapter/test_doris_partition.py
-
-# 99 项完整 Adapter Functional
-python -m pytest -q test/functional/adapter
-```
-
-Functional 会真实执行 dbt，查询最终数据和物理表属性，并捕获 SQLQuery 事件判断
-写入次数、SQL 顺序以及是否创建过物理 staging。版本 Gate 会检查所有存活 FE/BE
-均属于 `DORIS_TEST_EXPECTED_VERSION`。
-
-### 3.3 Lint、Package 和 CI
-
-```bash
-python -m flake8 dbt test
-git diff --check
-python -m build
-python -m twine check dist/*
-```
-
-GitHub CI 对 Python 3.10、Python 3.14 和发行包构建执行同类检查。
+当前代码的 42 项 Functional 和 112 项 Unit/Adapter 已全部通过；12 项 Shared
+Functional 和完整 99 项 Adapter Functional 也已在本地开发集群通过，测试 Schema
+和 Helper 残留为 0。Doris 4.1.3 完成了当前代码的两个 Microbatch Case，其余四个
+版本以及 4.1.3 的完整 42 项尚未补跑。
