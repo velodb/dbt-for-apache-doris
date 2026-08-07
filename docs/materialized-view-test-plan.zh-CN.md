@@ -1,10 +1,10 @@
-# dbt-doris 异步物化视图测试矩阵
+# dbt-doris 异步物化视图测试覆盖 146 个用例
 
 本文只回答三个问题：测试矩阵是什么、测试了哪些功能、测试怎么执行。
 
-## 1. 测试矩阵
+## 1. 当前测试由 Functional 和 Unit/Adapter 两层组成
 
-### 1.1 当前测试数量
+### 1.1 当前套件包含 22 个 Functional 和 124 个 Unit/Adapter 用例
 
 | 层级 | 测试入口 | 主要内容 | pytest 用例数（参数展开后） |
 | --- | --- | --- | ---: |
@@ -19,7 +19,7 @@
 | **Unit/Adapter 小计** |  | **不连接 Doris** | **124** |
 | **合计** |  |  | **146** |
 
-### 1.2 Doris 版本矩阵
+### 1.2 当前 22 项套件已在 Doris 4.1.3 通过
 
 | Doris | 当前套件：22 项，包含 Grants | 历史核心套件：21 项，不含 Grants |
 | --- | ---: | ---: |
@@ -32,7 +32,7 @@
 当前代码的 124 项 Unit/Adapter 测试为 `124/124 passed`。它们不依赖具体 Doris
 版本，因此不在每个 Doris 版本上重复执行。
 
-## 2. Functional 测试了什么
+## 2. Functional 测试覆盖异步物化视图的主要生命周期
 
 | Case | 功能 | 怎么测试 | 主要通过条件 |
 | --- | --- | --- | --- |
@@ -49,7 +49,7 @@
 | MV-E2E-021 | Source、Ref、Alias、Schema | MV 同时引用 `source()` 和 `ref()`，配置 Alias 和自定义 Schema | 数据、DDL、`dbt ls` 和 `manifest.json` 元数据正确 |
 | MV-E2E-022 | Grants | 创建授权、切换授权用户、修改定义并重复运行 | 授权正确更新；定义变化后授权仍在；不重复 Grant/Revoke |
 
-## 3. Unit/Adapter 测试了什么
+## 3. Unit/Adapter 测试覆盖 DDL、配置和异常分支
 
 | 范围 | Item 数 | 主要内容 |
 | --- | ---: | --- |
@@ -61,9 +61,9 @@
 | Relation Cache | 1 | MV → View 后只保留一个 Cache Key |
 | **合计** | **124** |  |
 
-## 4. 怎么测试
+## 4. 测试通过执行命令和查询 Doris 元数据完成验证
 
-### 4.1 执行 Functional
+### 4.1 Functional 测试连接真实 Doris 执行
 
 ```bash
 DORIS_TEST_HOST=127.0.0.1 \
@@ -103,7 +103,7 @@ WHERE MvDatabaseName = '<schema>' AND MvName = '<mv>';
 5. 故障后旧对象是否保留、能否重试；
 6. Grants、`__dbt_tmp`、`__dbt_backup` 和测试 Schema 是否符合预期。
 
-### 4.2 执行 Unit/Adapter
+### 4.2 Unit/Adapter 测试不连接 Doris 执行
 
 ```bash
 PYTHONPATH=. python -m pytest -q \
@@ -114,7 +114,7 @@ PYTHONPATH=. python -m pytest -q \
 
 把 `-q` 改成 `--collect-only -q`，可以核对实际收集数量和 Node ID。
 
-## 5. 结论
+## 5. 当前测试全部通过但仍有两项边界
 
 多版本测试使用 `1 FE + 1 BE`、`replication_num=1`，未覆盖多 FE/BE 拓扑。
 
