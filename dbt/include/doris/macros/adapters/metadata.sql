@@ -50,7 +50,7 @@
     ),
     tables as (
         select
-            null as "table_database",
+            '' as "table_database",
             information_schema_tables.table_schema,
             information_schema_tables.table_name,
             case when materialized_views.table_name is not null then 'materialized_view'
@@ -59,7 +59,7 @@
                  else information_schema_tables.table_type
             end as table_type,
             null as table_owner,
-            information_schema_tables.table_comment
+            nullif(information_schema_tables.table_comment, '') as table_comment
         from information_schema.tables as information_schema_tables
         left join materialized_views
           on information_schema_tables.table_schema = materialized_views.table_schema
@@ -67,13 +67,13 @@
     ),
     columns as (
         select
-            null as "table_database",
+            '' as "table_database",
             table_schema as "table_schema",
             table_name as "table_name",
             column_name as "column_name",
             ordinal_position as "column_index",
             data_type as "column_type",
-            column_comment as "column_comment"
+            nullif(column_comment, '') as "column_comment"
         from information_schema.columns
     )
     select

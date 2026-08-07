@@ -10,8 +10,8 @@
 3. 必须冻结批次的 Schema Change、自定义策略是否按设计使用物理 staging；
 4. Canonical View 正向类型切换是否只通过专用物理 CTAS Snapshot 保护数据，
    且 Snapshot 是否先于新模型 Pre-hook、`sql_header` 和 DDL；
-   Incremental 的 Backup 是否作为 Durable Marker 原名保留而不被重放、恢复或
-   Snapshot；
+   Incremental/Partition 的 Legacy Backup 是否作为 Durable Marker 原名保留而不
+   被重放、恢复或 Snapshot；
 5. 失败、重试、Full Refresh、Relation 类型切换是否保护已有目标数据；
 6. 已移除或危险的旧配置是否在 Hook 和数据写入前失败。
 
@@ -42,17 +42,20 @@ Doris 在 `INSERT OVERWRITE` 内部创建临时分区、写 Rowset 或发布版�
 
 | Doris 版本 | 发布定位 | FE/BE 完整 Version | 当前状态 |
 | --- | --- | --- | --- |
-| 2.1.11 | 2.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-2.1.11-rc01-97b77e6cda` | source passed / PR #2 pending |
-| 3.0.8 | 3.0 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.0.8-rc01-09b0cc49a6` | source passed / PR #2 pending |
-| 3.1.4 | 3.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.1.4-rc02-7f5ba43de6` | source passed / PR #2 pending |
-| 4.0.7 | **Stable** | `doris-4.0.7-rc02-35854e7e92a` | source passed / PR #2 pending |
-| 4.1.3 | **Latest** | `doris-4.1.3-rc02-7126cf65d96` | source passed / PR #2 pending |
+| 2.1.11 | 2.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-2.1.11-rc01-97b77e6cda` | source passed / current Head **43/43 passed** |
+| 3.0.8 | 3.0 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.0.8-rc01-09b0cc49a6` | source passed / current Head **43/43 passed** |
+| 3.1.4 | 3.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.1.4-rc02-7f5ba43de6` | source passed / current Head **43/43 passed** |
+| 4.0.7 | **Stable** | `doris-4.0.7-rc02-35854e7e92a` | source passed / current Head **43/43 passed** |
+| 4.1.3 | **Latest** | `doris-4.1.3-rc02-7126cf65d96` | source passed / current Head **43/43 passed** |
 
 这里的 `passed` 绑定第 8.4 节记录的源实现候选 `7f6d970`：该候选完成了 98 项
-完整 Functional、36 项聚焦 Incremental、版本身份和清理证据。这次向 PR #2 的
-选择性移植排除了独立的 Grants/MV 改动，因此发布前仍应在 PR Head 上重跑矩阵；
-不能把历史日志当作新提交产生的证据。PR #2 后续新增的 keyless RANDOM batch
-staging、物理 Sequence mapping 前置校验和 Microbatch 也不在该源证据内。
+完整 Functional、36 项聚焦 Incremental、版本身份和清理证据。当前合并候选包含
+Contracts、Persist Docs、Source Freshness、Store Failures、Grants 和 Async MV，
+当前 Head 已在五个精确版本完成 43 项聚焦 Incremental 运行时验证；当前结果与
+历史源候选日志分别记录，未用历史 36 项结果替代当前证据。
+keyless RANDOM batch staging、物理
+Sequence mapping 前置校验和 Microbatch 不在源证据内，只能使用当前 Head 的
+新运行结果。
 
 发布定位与环境基线分别以 Doris 官方
 [下载页](https://doris.apache.org/download/)、
@@ -117,12 +120,13 @@ Unit Test 不依赖 Doris，负责尽早发现：
   Grant；
 - Active View Snapshot 必须排在所有新模型 Pre-hook、`sql_header` 和 DDL 之前；
   Snapshot 成功后旧 View 仍在线，直到 Replacement 构建完成；
-- Incremental 不依赖 Generic View Rename/Exchange；Canonical 缺失时保留 Backup
-  Marker，并保证连续失败期间 `is_incremental()` 始终为 false，完整成功后才清理。
+- Generic View Rename/Exchange 明确拒绝；Incremental/Partition 的 Canonical 缺失
+  时保留任意类型 Backup Marker，并保证连续失败期间 `is_incremental()` 始终为
+  false，完整成功后才清理；Table/MV 则先恢复 Canonical 再重试。
 
-当前直接归属于 Incremental 的 Unit/Macro 共 112 case：106 个行为 case，加上
+当前直接归属于 Incremental 的 Unit/Macro 共 116 case：110 个行为 case，加上
 三个 Incremental Macro 文件展开的 6 个解析与 License case；它们均包含在完整
-281 项 Unit 中。功能覆盖和执行方式见
+355 项 Unit 中。功能覆盖和执行方式见
 [Incremental 测试文档](incremental-tests.zh-CN.md)。
 
 执行命令：
@@ -158,8 +162,9 @@ python -m pytest -q test/functional/adapter/test_doris_incremental.py
 每个版本必须保存两次运行的完整输出以及
 `DORIS_E2E_VERSION_EVIDENCE=<JSON>` 行。第二条命令不能替代完整套件。
 当前 `test/functional` 下只有 `adapter/`，所以 umbrella 路径也会收集同样的
-99 项；正式证据仍记录本轮实际执行的 `test/functional/adapter` 命令。第 8.4 节
-源候选的 98 项包含这次未移入 PR #2 的独立 Grants/MV 覆盖，不能作为当前收集数。
+实际用例；正式证据仍记录本轮执行的 `test/functional/adapter` 命令和实际收集数。
+第 8.4 节源候选的 98 项与合并前 Microbatch PR Head 的 99 项都不能替代当前合并
+候选的结果。
 `DORIS_TEST_EXPECTED_VERSION` 必须设置为当前矩阵行；Session Gate 会在测试前
 检查所有存活 FE/BE 的完整 Version 字符串。Expected `0.0.0` 会被拒绝；所有
 存活节点必须返回完全相同的 Version，且属于该精确版本，否则停止运行。
@@ -241,20 +246,22 @@ Incremental 日志、失败日志和清理记录。
 
 ### 4.2 首次运行
 
-普通策略首次运行应直接执行一次目标表 CTAS：
+未启用 `persist_docs.columns` 时，普通策略首次运行应直接执行一次目标表 CTAS：
 
 - 不创建逻辑 View；
 - 不创建物理 staging；
 - `merge` 的 Key 列按 `unique_key` 配置顺序成为物理 Schema 前缀；
 - Source Key 重复时，目标表不能发布部分数据。
 
-Microbatch 的首次运行由 Core 拆成多个批次：第一批 CTAS 只创建该批的精确
+未启用 `persist_docs.columns` 时，Microbatch 的首次运行由 Core 拆成多个批次：
+第一批 CTAS 只创建该批的精确
 `[start,end)` 分区，之后每批按 4.1 节执行一次命名分区覆盖。每批 Model 数据只
 物化一次，不得先写 physical staging 再 copy 到目标。
 
 ### 4.3 Full Refresh
 
-Full Refresh 允许创建 physical intermediate table，但应满足：
+未启用 `persist_docs.columns` 时，Full Refresh 允许创建 physical intermediate
+table，但应满足：
 
 - 模型数据只写入 intermediate table 一次；
 - 后续通过 `REPLACE WITH TABLE` 或 Rename 做元数据切换；
@@ -265,6 +272,15 @@ Full Refresh 允许创建 physical intermediate table，但应满足：
 Microbatch Full Refresh 的第一批通过 intermediate CTAS + 元数据交换重建目标，
 后续批次顺序执行精确分区 `ADD`/`INSERT OVERWRITE`；不得让每批都重建整表，也
 不得把完整数据集先物化后再按批复制。
+
+`persist_docs.columns=true` 的首次创建和 Full Refresh 是明确例外。Doris CTAS
+不能声明列注释，因此 Adapter 先用模型 SQL 创建私有 keyless
+`__dbt_docs_source`，读取 Doris 推断的精确类型，再创建带列注释的 intermediate
+并执行一次 `INSERT ... SELECT`。这两步确实是两次物理数据写入；只有 Copy 和
+后处理成功后才发布或交换目标。测试必须验证私有 Source 不继承 Key、Partition、
+Sequence 等目标属性，首次 Copy 失败不发布 Canonical，Full Refresh Copy 失败
+保留旧目标，Retry 完整重建并清理 Helper。已有目标的普通后续四策略仍按 4.1 节
+使用逻辑 View 和单条目标 DML。
 
 ### 4.4 允许物理 batch staging 的例外
 
@@ -293,8 +309,9 @@ Schema DDL 会改变 Source 与 Target 的可写列集合。冻结批次可避�
 ### 4.5 Canonical View 正向 CTAS 与 Durable Backup Marker
 
 Doris 2.1.11 实测表明，旧 View 的查询结果可能受调用 Session 当前 `sql_mode`
-影响。因此 Incremental View → Table 路径的验收基线是：**绝不重放 View DDL，
-也不假设创建时 Session 语义被保存**。只有该正向类型替换使用专用物理 Snapshot：
+影响。因此验收基线是：**绝不重放 View DDL，也不假设创建时 Session 语义被
+保存**。只有 Canonical View → Table/MV/Partition 的正向类型替换使用专用物理
+Snapshot：
 
 ```sql
 CREATE TABLE backup
@@ -323,18 +340,20 @@ AS SELECT * FROM source_view;
    Grant 或完全一致的 Schema 属性；
 6. 若失败后 Canonical 旧 View 仍存在，遗留 Snapshot Marker 可在下一次尝试前
    清理并重新冻结；若失败发生在 Drop/Rename 切换窗口导致 Canonical 缺失，则
-   物理 Backup 必须作为唯一旧数据副本保留；
-7. Incremental 遇到“Canonical 缺失、`__dbt_backup` 存在”时，Backup
-   必须保持原名和原类型作为 Durable Marker；当前覆盖 Legacy View 与 Table，
-   Retry 不得 Restore、执行、Snapshot、Rename 或提前 Drop 它；
+   物理 Backup 必须作为唯一旧数据副本保留。Table/MV 下一轮先恢复 Canonical；
+   Incremental/Partition 才进入下述 Durable No-restore 路径；
+7. Incremental/Partition 遇到“Canonical 缺失、`__dbt_backup` 存在”时，Backup
+   必须保持原名和原类型作为 Durable Marker；它可以是 Legacy View、Table 或
+   Async MV，Retry 不得 Restore、执行、Snapshot、Rename 或提前 Drop 它；
 8. Retry 直接从 Model SQL 完整构建 Canonical。连续失败期间 Canonical 保持缺失，
    使每轮编译的 `is_incremental()` 都为 false；旧数据只在 Backup 名下可查询，
    不保证失败期间 Canonical 名可用；
-9. 只有 Canonical 的 Main Build、适用的 Index/Docs、事务内 Post-hook 和 Commit
-   成功后才能 Drop Marker；事务外 Post-hook 在清理之后运行；Incremental 的
-   Legacy View Backup 永远不走 CTAS；
+9. 只有 Canonical 的 Main Build、适用的 Index/Grants/Docs、事务内 Post-hook 和
+   Commit 成功后才能 Drop Marker；事务外 Post-hook 在清理之后运行；
+   Incremental/Partition 的 Legacy View Backup 永远不走 CTAS；
 10. Snapshot Helper 在源/目标同名时必须在执行任何 SQL 前失败；目标已存在时
-    只允许只读 Relation 元数据查询，必须在修改 SQL 或 Drop 前失败；
+    只允许只读 Relation 元数据查询，必须在修改 SQL 或 Drop 前失败；Generic
+    View Rename/Exchange 同样在破坏性 SQL 前明确拒绝；
 11. SQL Mode 用例按 Pre-model Session 当时实际查询到的行断言，并证明后续
    `sql_header` 不会反向影响已经冻结的数据；不得从 View 创建模式推导结果；
 12. 这条物理 CTAS 仅是正向类型切换 Snapshot，不得被统计为普通内置 Incremental
@@ -405,18 +424,22 @@ Microbatch 用例必须同时验证：
 | INC-055 | `sync_all_columns` | Add/Drop/Type Change 后正确写入 | dbt Core 契约已覆盖 |
 | INC-056 | Schema Change 冻结批次写入失败与重试 | 先物理 CTAS 冻结批次，再 ALTER + 等待，最后执行带重复 Key Guard 的 DML；JSON Parse 失败时目标数据不变且 staging 保留；重试先替换陈旧 staging，不重复 ALTER，成功后清理 | 冻结/失败重试经五版本 E2E 覆盖；keyless RANDOM helper 经 Unit 与 PR #2 开发集群 E2E 覆盖，官方版本待复验 |
 | INC-057 | Schema Change Job 超时 | 新 Job 持续 `RUNNING`、旧 `FINISHED` Job 仍可见、最新 Job 暂不可见均给出确定性超时错误 | 三个 Unit 参数分支已覆盖 |
-| INC-060 | Full Refresh | 配置保留；一次 intermediate CTAS、零 copy INSERT、一次元数据交换 | 已覆盖 |
+| INC-060 | Full Refresh | 未启用 `persist_docs.columns` 时配置保留；一次 intermediate CTAS、零 copy INSERT、一次元数据交换 | 已覆盖 |
 | INC-061 | View → Table | 新模型上下文前 Snapshot；旧 View 在线完成 Replacement Build；再 Drop + Rename | 五版本正式 E2E 已覆盖 |
-| INC-062 | Incremental Drop/Rename 窗口失败重试 | Canonical 缺失；物理 Table Marker 原名保留；Retry 完整构建成功后才清理 | Failure Injection 与五版本正式 E2E 已覆盖 |
-| INC-063 | Incremental 陈旧 temp/intermediate/backup | Canonical 存在时清理陈旧对象；Canonical 缺失时不误删 Durable Marker | 五版本 E2E 已覆盖 |
+| INC-062 | Incremental/Partition Drop/Rename 窗口失败重试 | Canonical 缺失；物理 Table Marker 原名保留；Retry 完整构建成功后才清理 | Failure Injection 与五版本正式 E2E 已覆盖 |
+| INC-063 | Incremental/Partition 陈旧 temp/intermediate/backup | Canonical 存在时清理陈旧对象；Canonical 缺失时不误删 Durable Marker | 五版本 E2E 已覆盖 |
+| INC-064 | View → MV/Partition | 使用同一 Pre-model CTAS Snapshot 边界；旧 View 在线到 Replacement Build 完成 | 五版本正式 E2E 已覆盖 |
 | INC-065 | View Snapshot CTAS 失败 | 源 View 保持在线；新模型 Hook/Header/DDL 均未执行 | CTAS Failure 与 Ordering 断言经五版本正式 E2E 覆盖 |
 | INC-066 | Snapshot 配置与保真边界 | 固定 RANDOM/AUTO + Duplicate-without-keys；仅从当前模型携带 `replication_num` 或 `replication_allocation`；只保存结果数据 | 已覆盖 |
 | INC-067 | 当前 Session SQL Mode + 首列 DOUBLE | 以 Pre-model Session 实际查询结果为准；Snapshot 后再运行新模型 `sql_header`；不声称保留创建模式 | 2.1.11 发现已修复；五版本完整与聚焦套件均通过 |
+| INC-068 | Generic View Rename/Exchange | 在破坏性 SQL 前明确拒绝 | 已覆盖 |
 | INC-069 | View Snapshot Helper 前置条件 | 源/目标同名时零 SQL；目标已存在时只允许只读元数据查询；两者均零修改 SQL、零 Drop | Unit 与五版本 E2E 已覆盖 |
+| INC-070 | 无效 Grants | 权限名与用户校验先于目标 DML，目标数据不变 | 已覆盖 |
 | INC-071 | Pre/Post Hook 失败 | Pre 失败零 staging/DML；Post 失败后 DML 可见、逻辑 View 保留；Retry 先清理并收敛 | 五版本 E2E 已覆盖 |
-| INC-072 | Persistent Backup Marker 三轮运行 | Incremental 连续失败不发布 Canonical、不触碰 Backup；成功完整构建后才清理 | 真实 Doris E2E 已覆盖 |
+| INC-072 | Persistent Backup Marker 三轮运行 | Incremental/Partition 连续失败不发布 Canonical、不触碰 Backup；成功完整构建后才清理 | 真实 Doris E2E 已覆盖 |
 | INC-073 | View Snapshot 后 Replacement Build 或 Pre-hook 失败 | Snapshot 先完成；旧 View 在线、物理 Backup 保留、零目标 DML；Pre-hook 失败时 Replacement CTAS 尚未开始；修正模型后 Retry 成功并清理 Helper | 两种失败分支经五版本 E2E 覆盖 |
 | INC-080 | 自定义策略 | keyless RANDOM physical staging + dbt 标准五参数契约；Source 首列 DOUBLE 也可冻结 | Unit 与 PR #2 开发集群 E2E 已覆盖，官方版本待复验 |
+| Persist Docs | Incremental 列注释建表与恢复 | 14 项覆盖 Append 更新、Merge、可见 Sequence、首次/Full Refresh Copy 失败恢复和 Microbatch；私有 keyless docs source + intermediate 为两次物理写入，普通后续增量仍单 DML | `14/14 passed`，包含在完整 Adapter Functional 中 |
 
 ## 6. 数据与失败注入
 
@@ -436,6 +459,7 @@ Microbatch 用例必须同时验证：
 
 - 缺失 Source Relation；
 - 重复 Key；
+- 不存在的 Grant User；
 - Doris Schema Change Job `CANCELLED`，以及新 Job `RUNNING`、旧完成 Job 仍可见、
   最新 Job 暂不可见三类超时；
 - Schema Change 已完成 ALTER 后，带重复 Key Guard 的目标 DML 因 JSON Parse
@@ -443,7 +467,7 @@ Microbatch 用例必须同时验证：
 - View Snapshot CTAS 失败，以及 CTAS 成功后 Rename 失败留下 Durable Table Marker；
 - Snapshot 成功、Replacement Build 或 Pre-hook 失败：旧 View 仍在线、Backup
   原名保留且零目标 DML；Retry 清理或替换陈旧 Marker 后重新 Snapshot；
-- Incremental Canonical 缺失且 Legacy View/Table Backup 存在时再次
+- Incremental/Partition Canonical 缺失且 Legacy View/Table Backup 存在时再次
   失败，确认 Marker 原名保留、Canonical 仍缺失；随后成功运行完整构建 Canonical
   并清理 Marker；
 - 无效策略和危险迁移配置；
@@ -460,8 +484,8 @@ Microbatch 用例必须同时验证：
 2. 四个内置策略均有 SQL 事件证据证明普通批次不存在 physical staging；
 3. View 类型切换证明只有正向专用 CTAS Snapshot 例外，且 Snapshot 先于所有新模型
    Hook/Header/DDL，旧 View 在线直到 Replacement Build 完成；同时覆盖配置隔离、
-   真实 CTAS 失败和 Rename 失败；
-4. Incremental 的 Durable Marker 三轮用例证明 Retry 不 Restore 或
+   真实 CTAS 失败、Rename 失败和 Generic View 操作拒绝；
+4. Incremental 与 Partition 的 Durable Marker 三轮用例证明 Retry 不 Restore 或
    Snapshot Backup、连续失败保持 `is_incremental()=false`、成功后才清理 Marker；
 5. 本轮已覆盖的失败路径证明目标数据不发生部分更新；
 6. 当前测试 Schema 与辅助 Relation 全部清理；
@@ -578,6 +602,33 @@ pending。
 显式 event-time Backfill 和 Full Refresh，但 Adapter 仍为 `dirty=true`，且没有
 运行 4.1.3 的完整 99 项套件；所以它只是聚焦开发证据，不能把第 8.4 节的旧完整
 结果升级成当前 PR Head 的正式通过。其余四个精确发行版本仍待 Microbatch 复验。
+
+以上 PR #2 结果均发生在合并主干前；当前合并候选重新包含 Contracts、Persist Docs、
+Source Freshness、Store Failures、Grants 和 Async MV，必须重新记录完整套件的实际
+收集数与结果，不能直接沿用 99 项结果。
+
+#### 当前合并后 PR Head
+
+| 套件 | 当前结果 |
+| --- | --- |
+| 聚焦 Incremental Unit/Adapter | 第一条命令 `110/110`，Macro Gate `6/6`，合计 `116/116` |
+| 聚焦 Unit/Adapter 明细 | `test_incremental` 24、Strategy Validation 53、Strategy SQL 27、Staging 3、Adapter/UTC 3、Gate 6 |
+| 完整 Unit | `355/355 passed` |
+| 聚焦 Incremental Functional | `43/43 passed` |
+| Table/View/Partition 共享回归 | `12/12 passed` |
+| Persist Docs Functional | `14/14 passed`；包含 Sequence、Copy 失败恢复和 Microbatch Target |
+| 完整 Adapter Functional | `153/153 passed`；207 warnings；163.14s |
+| Doris 2.1.11 当前运行时 | `43/43 passed`；FE/BE `doris-2.1.11-rc01-97b77e6cda`；Version Gate passed |
+| Doris 3.0.8 当前运行时 | `43/43 passed`；FE/BE `doris-3.0.8-rc01-09b0cc49a6`；Version Gate passed |
+| Doris 3.1.4 当前运行时 | `43/43 passed`；FE/BE `doris-3.1.4-rc02-7f5ba43de6`；Version Gate passed |
+| Doris 4.0.7 当前运行时 | `43/43 passed`；FE/BE `doris-4.0.7-rc02-35854e7e92a`；Version Gate passed |
+| Doris 4.1.3 当前运行时 | `43/43 passed`；FE/BE `doris-4.1.3-rc02-7126cf65d96`；Version Gate passed |
+| 清理 | 五版本 matching Schema/Helper、临时 runtime/进程/监听均为 0 |
+| Lint / Build / Twine Check | passed |
+
+当前直接 Incremental 合计 159 项，计入 12 项共享回归后为 171 项；Persist Docs、
+完整 Unit 和完整 Adapter Functional 是更广的套件，不重复累加。五个精确版本
+均完成当前 43 项运行时验证；第 8.4 节历史 36 项聚焦结果不替代当前版本证据。
 
 ### 8.3 旧精确版本运行（stale）
 

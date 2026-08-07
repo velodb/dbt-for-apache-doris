@@ -66,6 +66,96 @@ def table_runner(config=None, model=None, columns_sql="`id` int"):
     )
 
 
+def test_current_timestamp_is_utc():
+    runner = MacroRunner("adapters/freshness.sql")
+
+    assert runner.sql("doris__current_timestamp") == "utc_timestamp()"
+
+
+class TestGrants:
+    def runner(self):
+        return MacroRunner("adapters/grants.sql")
+
+    def test_show_grants_uses_doris_table_privileges(self):
+        sql = self.runner().sql(
+            "doris__get_show_grant_sql",
+            FakeRelation(schema="analytics", identifier="orders"),
+        )
+
+        assert "from information_schema.table_privileges" in sql
+        assert "table_schema = 'analytics'" in sql
+        assert "table_name = 'orders'" in sql
+        assert "as grantee" in sql
+        assert "as privilege_type" in sql
+
+    @pytest.mark.parametrize(
+        "privilege,doris_privilege",
+        [
+            ("select", "SELECT_PRIV"),
+            ("insert", "LOAD_PRIV"),
+            ("alter", "ALTER_PRIV"),
+            ("create", "CREATE_PRIV"),
+            ("drop", "DROP_PRIV"),
+            ("show_view", "SHOW_VIEW_PRIV"),
+        ],
+    )
+    def test_grant_maps_dbt_privileges(self, privilege, doris_privilege):
+        sql = self.runner().sql(
+            "doris__get_grant_sql",
+            FakeRelation(),
+            privilege,
+            ["analyst"],
+        )
+
+        assert sql == (
+            f"grant {doris_privilege} on `dbt_test`.`my_model` "
+            "to 'analyst'@'%'"
+        )
+
+    def test_revoke_supports_an_explicit_user_host(self):
+        sql = self.runner().sql(
+            "doris__get_revoke_sql",
+            FakeRelation(),
+            "select",
+            ["analyst@10.%"],
+        )
+
+        assert sql.endswith("from 'analyst'@'10.%'")
+
+    @pytest.mark.parametrize(
+        "macro,args,message",
+        [
+            (
+                "doris__grant_privilege",
+                ("execute",),
+                "Unsupported Doris grant privilege",
+            ),
+            (
+                "doris__grant_user_identity",
+                ("role:analyst",),
+                "role grants cannot be reconciled",
+            ),
+        ],
+    )
+    def test_unsupported_grants_fail_before_dcl(self, macro, args, message):
+        with pytest.raises(CapturedCompilerError, match=message):
+            self.runner().render(macro, *args)
+
+    def test_each_dcl_statement_runs_separately(self):
+        runner = self.runner()
+
+        runner.render(
+            "doris__call_dcl_statements",
+            ["grant SELECT_PRIV on db.table to user1", "revoke LOAD_PRIV on db.table from user2"],
+        )
+
+        assert [statement.name for statement in runner.statements] == [
+            "grant_1",
+            "grant_2",
+        ]
+        assert len(runner.statements) == 2
+
+
 class TestSingleStatementDDL:
     """dbt sends one statement per `execute()`; the connector cannot take two.
 
@@ -256,6 +346,48 @@ class TestContractProjection:
         ), f"an enforced contract should cast to the declared types: {sql}"
 
 
+class TestViewContractValidation:
+    def test_enforced_contract_runs_preflight_before_create(self):
+        class Contract:
+            enforced = True
+
+        validated = []
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig({"contract": Contract()}),
+                "get_assert_columns_equivalent": validated.append,
+            },
+        )
+
+        sql = runner.sql(
+            "doris__create_view_as",
+            FakeRelation(relation_type="view"),
+            "select 1 as id",
+        )
+
+        assert validated == ["select 1 as id"]
+        assert "create or replace view" in sql.lower()
+
+    def test_unenforced_view_skips_contract_preflight(self):
+        validated = []
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig(),
+                "get_assert_columns_equivalent": validated.append,
+            },
+        )
+
+        runner.sql(
+            "doris__create_view_as",
+            FakeRelation(relation_type="view"),
+            "select 1 as id",
+        )
+
+        assert validated == []
+
+
 class TestPersistDocs:
     """Column comments come from dbt as {column_name: column_info_dict}.
 
@@ -277,7 +409,8 @@ class TestPersistDocs:
         assert len(runner.statements) == 1
         sql = runner.statements[0].sql
         assert sql == (
-            "alter table `dbt_test`.`my_model` modify column `id` " "comment 'the user id'"
+            'alter table `dbt_test`.`my_model` modify column `id` '
+            'comment "the user id"'
         ), sql
         # Doris rejects a type in MODIFY COLUMN for key and distribution columns.
         assert "int" not in sql, f"the column type must be omitted: {sql}"
@@ -290,8 +423,7 @@ class TestPersistDocs:
             {"id": {"description": "it's a c:\\path"}},
         )
         sql = runner.statements[0].sql
-        assert "\\'" in sql, f"single quotes must be escaped: {sql}"
-        assert "\\\\path" in sql, f"backslashes must be escaped: {sql}"
+        assert 'comment "it\'s a c:\\path"' in sql
 
     def test_columns_without_a_description_are_skipped(self):
         runner = self.runner()
@@ -319,7 +451,16 @@ class TestPersistDocs:
     def test_relation_comment_escapes_quotes(self):
         runner = self.runner()
         runner.render("doris__alter_relation_comment", FakeRelation(), "it's fine")
-        assert "\\'" in runner.statements[0].sql
+        assert 'comment "it\'s fine"' in runner.statements[0].sql
+
+    def test_complex_comment_update_requires_a_full_refresh(self):
+        runner = self.runner()
+        with pytest.raises(CapturedCompilerError, match="--full-refresh"):
+            runner.render(
+                "doris__alter_relation_comment",
+                FakeRelation(),
+                "it's \"documented\"",
+            )
 
 
 INCREMENTAL_MACROS = (
@@ -426,16 +567,6 @@ class TestIncrementalStrategyValidation:
 
     def test_append_needs_no_unique_key(self):
         assert self.validate({"incremental_strategy": "append"}) == "append"
-
-    def test_grants_are_rejected_before_execution(self):
-        with pytest.raises(CapturedCompilerError) as excinfo:
-            self.validate(
-                {
-                    "incremental_strategy": "append",
-                    "grants": {"select": ["analyst"]},
-                }
-            )
-        assert "grants' config is not implemented" in str(excinfo.value)
 
     def test_merge_requires_unique_key(self):
         with pytest.raises(CapturedCompilerError) as excinfo:
@@ -658,6 +789,21 @@ class TestIncrementalStrategyValidation:
             DISTRIBUTED BY RANDOM BUCKETS AUTO
             PROPERTIES (
             "enable_duplicate_without_keys_by_default" = "true",
+            "replication_num" = "1"
+            )''',
+        )
+
+        assert table_model == "duplicate"
+
+    @pytest.mark.parametrize("spoofed_key", ["UNIQUE KEY(", "AGGREGATE KEY("])
+    def test_table_model_ignores_key_clause_text_in_comments(self, spoofed_key):
+        table_model = self.runner({}).render(
+            "doris__table_model_from_create_table",
+            f'''CREATE TABLE `target` (`id` int COMMENT "example {spoofed_key}")
+            DUPLICATE KEY(`id`)
+            COMMENT "documented {spoofed_key}"
+            DISTRIBUTED BY HASH(`id`) BUCKETS 1
+            PROPERTIES (
             "replication_num" = "1"
             )''',
         )

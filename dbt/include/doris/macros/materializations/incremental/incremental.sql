@@ -20,6 +20,12 @@
   {% set existing_relation = load_cached_relation(this) %}
   {% set temp_relation = make_temp_relation(target_relation) %}
   {% set intermediate_relation = make_intermediate_relation(target_relation) %}
+  {% set target_docs_source_relation = (
+      doris__documented_table_source_relation(target_relation)
+  ) %}
+  {% set intermediate_docs_source_relation = (
+      doris__documented_table_source_relation(intermediate_relation)
+  ) %}
   {% set recovered_from_backup = false %}
   {# A failed type replacement can leave the old object at dbt's backup name
      while the canonical target is absent. Keep that durable recovery marker
@@ -89,6 +95,12 @@
   {% set preexisting_intermediate_relation = load_cached_relation(
       intermediate_relation
   ) %}
+  {% set preexisting_target_docs_source_relation = load_cached_relation(
+      target_docs_source_relation
+  ) %}
+  {% set preexisting_intermediate_docs_source_relation = load_cached_relation(
+      intermediate_docs_source_relation
+  ) %}
   {% set preexisting_backup_relation = (
       none
       if recovered_from_backup
@@ -96,6 +108,8 @@
   ) %}
   {{ drop_relation_if_exists(preexisting_temp_relation) }}
   {{ drop_relation_if_exists(preexisting_intermediate_relation) }}
+  {{ drop_relation_if_exists(preexisting_target_docs_source_relation) }}
+  {{ drop_relation_if_exists(preexisting_intermediate_docs_source_relation) }}
   {{ drop_relation_if_exists(preexisting_backup_relation) }}
 
   {# Snapshot an active View before this model's hooks or sql_header can alter
@@ -110,6 +124,10 @@
 
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}
+
+  {# Doris DML is not rolled back if a later grant validation fails. Validate
+     privileges and user existence before changing target data. #}
+  {% do doris__preflight_grants(target_relation, grant_config) %}
 
   {% set to_drop = [] %}
   {% if recovered_from_backup %}
@@ -137,22 +155,43 @@
       ) %}
   {% endif %}
 
+  {% set build_sql = none %}
   {% if existing_relation is none %}
-      {% set build_sql = doris__get_incremental_create_table_as_sql(
-          effective_strategy,
-          target_relation,
-          source_sql,
-          source_columns
-      ) %}
-      {% set relation_for_indexes = target_relation %}
+      {% if config.persist_column_docs() %}
+          {% do doris__create_incremental_documented_table(
+              effective_strategy,
+              intermediate_relation,
+              source_sql,
+              source_columns
+          ) %}
+          {% set relation_for_indexes = intermediate_relation %}
+          {% set need_swap = true %}
+      {% else %}
+          {% set build_sql = doris__get_incremental_create_table_as_sql(
+              effective_strategy,
+              target_relation,
+              source_sql,
+              source_columns
+          ) %}
+          {% set relation_for_indexes = target_relation %}
+      {% endif %}
 
   {% elif full_refresh_mode %}
-      {% set build_sql = doris__get_incremental_create_table_as_sql(
-          effective_strategy,
-          intermediate_relation,
-          source_sql,
-          source_columns
-      ) %}
+      {% if config.persist_column_docs() %}
+          {% do doris__create_incremental_documented_table(
+              effective_strategy,
+              intermediate_relation,
+              source_sql,
+              source_columns
+          ) %}
+      {% else %}
+          {% set build_sql = doris__get_incremental_create_table_as_sql(
+              effective_strategy,
+              intermediate_relation,
+              source_sql,
+              source_columns
+          ) %}
+      {% endif %}
       {% set relation_for_indexes = intermediate_relation %}
       {% set need_swap = true %}
 
@@ -300,16 +339,25 @@
       {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
   {% endif %}
 
-  {% call statement('main') %}
-      {{ build_sql }}
-  {% endcall %}
+  {% if build_sql is not none %}
+      {% call statement('main') %}
+          {{ build_sql }}
+      {% endcall %}
+  {% endif %}
 
   {% if existing_relation is none or full_refresh_mode %}
       {% do create_indexes(relation_for_indexes) %}
   {% endif %}
 
   {% if need_swap %}
-      {% if existing_relation.type == 'table' %}
+      {% if existing_relation is none %}
+          {# Persist Docs builds the complete initial relation privately. Do not
+             publish a canonical table until its data copy and indexes succeed. #}
+          {% do adapter.rename_relation(
+              intermediate_relation,
+              target_relation
+          ) %}
+      {% elif existing_relation.type == 'table' %}
           {# swap=true leaves the old target online under intermediate_relation
              until all post-processing succeeds and cleanup runs. #}
           {% do exchange_relation(
@@ -391,17 +439,38 @@
 {% endmacro %}
 
 
+{% macro doris__create_incremental_documented_table(
+    strategy,
+    relation,
+    sql,
+    source_columns=none
+) %}
+    {% set prepared_sql = sql %}
+    {% if strategy == 'merge' %}
+        {% set ordered_source_columns = doris__unique_key_first_columns(
+            source_columns,
+            config.get('unique_key')
+        ) %}
+        {% set prepared_sql = doris__validated_unique_ctas_source_sql(
+            sql,
+            config.get('unique_key'),
+            ordered_source_columns
+        ) %}
+    {% endif %}
+    {% do doris__create_documented_table_as(
+        false,
+        relation,
+        prepared_sql,
+        strategy == 'merge',
+        false,
+        true
+    ) %}
+{% endmacro %}
+
+
 {% macro dbt_doris_validate_get_incremental_strategy(config) %}
     {% set unique_key = config.get('unique_key') %}
     {% set strategy = config.get('incremental_strategy') or 'default' %}
-
-    {% if config.get('grants', none) %}
-        {% do exceptions.raise_compiler_error(
-            "The dbt 'grants' config is not implemented by dbt-doris yet. "
-            ~ "Remove it from incremental model " ~ model.unique_id
-            ~ " and manage Doris privileges separately."
-        ) %}
-    {% endif %}
 
     {% if config.get('sequence_col', none) %}
         {% do exceptions.raise_compiler_error(

@@ -15,18 +15,57 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-{% macro doris__materialized_view_identifier_list(values) -%}
-    {%- if values is string -%}
+{% macro doris__materialized_view_identifier_values(name, values) -%}
+    {%- if values is none -%}
+        {{ return([]) }}
+    {%- elif values is string -%}
         {%- set values = [values] -%}
+    {%- elif values is not sequence or values is mapping -%}
+        {{ exceptions.raise_compiler_error(
+            "materialized view " ~ name ~ " must be a string or a list of strings."
+        ) }}
     {%- endif -%}
+    {%- if values | length == 0 -%}
+        {{ exceptions.raise_compiler_error(
+            "materialized view " ~ name ~ " must not be empty."
+        ) }}
+    {%- endif -%}
+    {%- set normalized_values = [] -%}
+    {%- for value in values -%}
+        {%- if value is not string or not value | trim -%}
+            {{ exceptions.raise_compiler_error(
+                "Every materialized view " ~ name
+                ~ " value must be a non-empty string."
+            ) }}
+        {%- endif -%}
+        {%- do normalized_values.append(value | trim) -%}
+    {%- endfor -%}
+    {{ return(normalized_values) }}
+{%- endmacro %}
+
+{% macro doris__materialized_view_identifier_list(values, name='identifier') -%}
+    {%- set values = doris__materialized_view_identifier_values(name, values) -%}
     {%- for value in values -%}
         `{{ value | replace("`", "``") }}`{% if not loop.last %}, {% endif %}
     {%- endfor -%}
 {%- endmacro %}
 
+{% macro doris__materialized_view_hash_values(values) -%}
+    {%- set encoded = [] -%}
+    {%- for value in values -%}
+        {%- set text = value | string -%}
+        {%- do encoded.append(text | length ~ ':' ~ text) -%}
+    {%- endfor -%}
+    {{ return(encoded | join) }}
+{%- endmacro %}
+
 {% macro doris__validate_materialized_view_refresh_config() -%}
-    {%- set refresh_method = (config.get('refresh_method', 'auto') or 'auto') | lower -%}
-    {%- set refresh_trigger = (config.get('refresh_trigger', 'manual') or 'manual') | lower -%}
+    {%- set refresh_method = (
+        config.get('refresh_method', 'auto') or 'auto'
+    ) | trim | lower -%}
+    {%- set refresh_trigger = (
+        config.get('refresh_trigger', 'manual') or 'manual'
+    ) | trim | lower -%}
     {%- set schedule = config.get('refresh_schedule') -%}
     {%- if refresh_method not in ['auto', 'complete'] -%}
         {{ exceptions.raise_compiler_error(
@@ -47,16 +86,17 @@
             ) }}
         {%- endif -%}
         {%- set interval = schedule.get('interval') -%}
-        {%- set unit = (schedule.get('unit') or '') | lower -%}
+        {%- set unit = (schedule.get('unit') or '') | trim | lower -%}
         {%- if interval is not integer or interval <= 0 -%}
             {{ exceptions.raise_compiler_error(
                 "materialized view refresh_schedule.interval must be a positive integer."
             ) }}
         {%- endif -%}
-        {%- if unit not in ['second', 'minute', 'hour', 'day', 'week'] -%}
+        {%- if unit not in ['minute', 'hour', 'day', 'week'] -%}
             {{ exceptions.raise_compiler_error(
                 "Invalid materialized view refresh_schedule.unit '" ~ unit
-                ~ "'. Expected one of: second, minute, hour, day, week."
+                ~ "'. Expected one of: minute, hour, day, week. Doris only "
+                ~ "enables second-level schedules through a test-only setting."
             ) }}
         {%- endif -%}
         {%- set start_time = schedule.get('start_time') -%}
@@ -73,12 +113,16 @@
 {%- endmacro %}
 
 {% macro doris__materialized_view_refresh_clause() -%}
-    {%- set refresh_method = (config.get('refresh_method', 'auto') or 'auto') | lower -%}
-    {%- set refresh_trigger = (config.get('refresh_trigger', 'manual') or 'manual') | lower -%}
+    {%- set refresh_method = (
+        config.get('refresh_method', 'auto') or 'auto'
+    ) | trim | lower -%}
+    {%- set refresh_trigger = (
+        config.get('refresh_trigger', 'manual') or 'manual'
+    ) | trim | lower -%}
     refresh {{ refresh_method }}
     {% if refresh_trigger == 'schedule' -%}
         {%- set schedule = config.get('refresh_schedule') -%}
-        on schedule every {{ schedule.get('interval') }} {{ schedule.get('unit') | lower }}
+        on schedule every {{ schedule.get('interval') }} {{ schedule.get('unit') | trim | lower }}
         {%- if schedule.get('start_time') %}
             starts '{{ schedule.get('start_time') | replace("\\", "\\\\") | replace("'", "\\'") }}'
         {%- endif -%}
@@ -88,23 +132,254 @@
 {%- endmacro %}
 
 {% macro doris__validate_materialized_view_identifier_config(name, values) -%}
-    {%- if values is none -%}
-        {{ return(none) }}
-    {%- endif -%}
-    {%- if values is string -%}
-        {%- set values = [values] -%}
-    {%- elif values is not sequence or values is mapping -%}
+    {% do doris__materialized_view_identifier_values(name, values) %}
+{%- endmacro %}
+
+{% macro doris__materialized_view_effective_properties() -%}
+    {%- set configured_properties = config.get('properties') -%}
+    {%- if configured_properties is none -%}
+        {%- set configured_properties = {} -%}
+    {%- elif configured_properties is not mapping -%}
         {{ exceptions.raise_compiler_error(
-            "materialized view " ~ name ~ " must be a string or a list of strings."
+            "materialized view properties must be a dictionary."
         ) }}
     {%- endif -%}
-    {%- for value in values -%}
-        {%- if value is not string or not value | trim -%}
+
+    {#-- Match the table materialization's replication_num convenience config
+         without mutating the dictionary held by dbt's model config. --#}
+    {%- set properties = {} -%}
+    {%- do properties.update(configured_properties) -%}
+    {%- set replication_num = config.get('replication_num') -%}
+    {%- if replication_num is not none -%}
+        {%- do properties.update({'replication_num': replication_num}) -%}
+    {%- endif -%}
+    {%- for property, value in properties.items() -%}
+        {%- if property is not string or not property | trim -%}
             {{ exceptions.raise_compiler_error(
-                "Every materialized view " ~ name ~ " value must be a non-empty string."
+                "Every materialized view property name must be a non-empty string."
+            ) }}
+        {%- endif -%}
+        {%- if (
+            value is not string
+            and value is not number
+            and value is not boolean
+        ) -%}
+            {{ exceptions.raise_compiler_error(
+                "materialized view property '" ~ property
+                ~ "' must have a string, number, or boolean value."
             ) }}
         {%- endif -%}
     {%- endfor -%}
+    {%- set effective_replication_num = properties.get('replication_num') -%}
+    {%- if effective_replication_num is not none -%}
+        {%- set replication_text = effective_replication_num | string | trim -%}
+        {%- if (
+            not replication_text.isdigit()
+            or replication_text | int <= 0
+        ) -%}
+            {{ exceptions.raise_compiler_error(
+                "materialized view replication_num must be a positive integer."
+            ) }}
+        {%- endif -%}
+        {%- do properties.update({
+            'replication_num': replication_text | int | string
+        }) -%}
+    {%- endif -%}
+    {{ return(properties) }}
+{%- endmacro %}
+
+{% macro doris__materialized_view_is_identifier(value, allow_qualified=false) -%}
+    {#-- Doris identifiers contain letters, digits, dollar signs, underscores,
+         or a complete backtick-quoted segment. Function identifiers may have
+         one database qualifier. --#}
+    {%- set identifier = value | trim -%}
+    {%- set scan = namespace(
+        in_backticks=false,
+        escaped_backtick=false,
+        segment_started=false,
+        segment_closed=false,
+        segment_has_non_digit=false,
+        pending_whitespace=false,
+        dots=0,
+        valid=true
+    ) -%}
+    {%- for character in identifier -%}
+        {%- if scan.in_backticks -%}
+            {%- if scan.escaped_backtick -%}
+                {%- set scan.escaped_backtick = false -%}
+            {%- elif character == '`' -%}
+                {%- if not loop.last and identifier[loop.index] == '`' -%}
+                    {%- set scan.escaped_backtick = true -%}
+                {%- else -%}
+                    {%- set scan.in_backticks = false -%}
+                    {%- set scan.segment_closed = true -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- elif (
+            character in [' ', '\t', '\r', '\n']
+            and allow_qualified
+        ) -%}
+            {%- set scan.pending_whitespace = true -%}
+        {%- elif character == '`' -%}
+            {%- if scan.pending_whitespace and scan.segment_started -%}
+                {%- set scan.valid = false -%}
+            {%- endif -%}
+            {%- set scan.pending_whitespace = false -%}
+            {%- if scan.segment_started or scan.segment_closed -%}
+                {%- set scan.valid = false -%}
+            {%- else -%}
+                {%- set scan.in_backticks = true -%}
+                {%- set scan.segment_started = true -%}
+                {%- set scan.segment_has_non_digit = true -%}
+            {%- endif -%}
+        {%- elif character == '.' and allow_qualified -%}
+            {%- if (
+                not scan.segment_started
+                or not scan.segment_has_non_digit
+                or scan.dots >= 1
+            ) -%}
+                {%- set scan.valid = false -%}
+            {%- endif -%}
+            {%- set scan.pending_whitespace = false -%}
+            {%- set scan.dots = scan.dots + 1 -%}
+            {%- set scan.segment_started = false -%}
+            {%- set scan.segment_closed = false -%}
+            {%- set scan.segment_has_non_digit = false -%}
+        {%- elif (
+            character.isalnum()
+            or character in ['$', '_']
+            or not character.isascii()
+        ) -%}
+            {%- if scan.pending_whitespace and scan.segment_started -%}
+                {%- set scan.valid = false -%}
+            {%- endif -%}
+            {%- set scan.pending_whitespace = false -%}
+            {%- if scan.segment_closed -%}
+                {%- set scan.valid = false -%}
+            {%- else -%}
+                {%- set scan.segment_started = true -%}
+                {%- if character not in '0123456789' -%}
+                    {%- set scan.segment_has_non_digit = true -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- else -%}
+            {%- set scan.valid = false -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{ return(
+        scan.valid
+        and not scan.in_backticks
+        and scan.segment_started
+        and scan.segment_has_non_digit
+    ) }}
+{%- endmacro %}
+
+{% macro doris__materialized_view_is_partition_expression(expression) -%}
+    {#-- Match the top-level shape of Doris mvPartition:
+         identifier | functionCallExpression. Function arguments remain SQL and
+         are validated by Doris itself. --#}
+    {%- set scan = namespace(
+        depth=0,
+        quote=none,
+        escaped=false,
+        open_index=none,
+        close_index=none,
+        valid=true
+    ) -%}
+    {%- for character in expression -%}
+        {%- if scan.quote is not none -%}
+            {%- if scan.escaped -%}
+                {%- set scan.escaped = false -%}
+            {%- elif character == '\\' and scan.quote != '`' -%}
+                {%- set scan.escaped = true -%}
+            {%- elif character == scan.quote -%}
+                {%- if not loop.last and expression[loop.index] == scan.quote -%}
+                    {%- set scan.escaped = true -%}
+                {%- else -%}
+                    {%- set scan.quote = none -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- elif character in ["'", '"', '`'] -%}
+            {%- set scan.quote = character -%}
+        {%- elif character == '(' -%}
+            {%- if scan.depth == 0 -%}
+                {%- if scan.open_index is not none -%}
+                    {%- set scan.valid = false -%}
+                {%- else -%}
+                    {%- set scan.open_index = loop.index0 -%}
+                {%- endif -%}
+            {%- endif -%}
+            {%- set scan.depth = scan.depth + 1 -%}
+        {%- elif character == ')' -%}
+            {%- if scan.depth <= 0 -%}
+                {%- set scan.valid = false -%}
+            {%- else -%}
+                {%- set scan.depth = scan.depth - 1 -%}
+                {%- if scan.depth == 0 -%}
+                    {%- set scan.close_index = loop.index0 -%}
+                {%- endif -%}
+            {%- endif -%}
+        {%- endif -%}
+    {%- endfor -%}
+
+    {%- if not scan.valid or scan.quote is not none or scan.depth != 0 -%}
+        {{ return(false) }}
+    {%- elif scan.open_index is none -%}
+        {{ return(doris__materialized_view_is_identifier(expression)) }}
+    {%- elif scan.close_index != expression | length - 1 -%}
+        {{ return(false) }}
+    {%- endif -%}
+
+    {%- set function_identifier = expression[:scan.open_index] | trim -%}
+    {{ return(
+        doris__materialized_view_is_identifier(
+            function_identifier,
+            allow_qualified=true
+        )
+    ) }}
+{%- endmacro %}
+
+{% macro doris__materialized_view_partition_expression() -%}
+    {%- set configured_partition = config.get('partition_by') -%}
+    {%- if configured_partition is none -%}
+        {{ return(none) }}
+    {%- elif configured_partition is string -%}
+        {%- set partitions = [configured_partition] -%}
+    {%- elif configured_partition is sequence and configured_partition is not mapping -%}
+        {%- set partitions = configured_partition -%}
+    {%- else -%}
+        {%- set partitions = [] -%}
+    {%- endif -%}
+
+    {%- if (
+        partitions | length != 1
+        or partitions[0] is not string
+        or not partitions[0] | trim
+    ) -%}
+        {{ exceptions.raise_compiler_error(
+            "materialized view partition_by must be a string or a list "
+            ~ "containing exactly one non-empty string."
+        ) }}
+    {%- endif -%}
+
+    {%- set partition = partitions[0] | trim -%}
+    {%- if (
+        ';' in partition
+        or '--' in partition
+        or '/*' in partition
+        or '*/' in partition
+    ) -%}
+        {{ exceptions.raise_compiler_error(
+            "materialized view partition_by contains unsafe SQL tokens."
+        ) }}
+    {%- endif -%}
+    {%- if not doris__materialized_view_is_partition_expression(partition) -%}
+        {{ exceptions.raise_compiler_error(
+            "materialized view partition_by must contain one Doris identifier "
+            ~ "or function call."
+        ) }}
+    {%- endif -%}
+    {{ return(partition) }}
 {%- endmacro %}
 
 {% macro doris__validate_materialized_view_ddl_config() -%}
@@ -116,37 +391,8 @@
         'distributed_by',
         config.get('distributed_by')
     ) %}
-    {%- set partition_by = config.get('partition_by') -%}
-    {%- if partition_by is not none and partition_by is not string -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view partition_by must be a string."
-        ) }}
-    {%- endif -%}
-    {%- if (
-        partition_by
-        and (
-            ';' in partition_by
-            or '--' in partition_by
-            or '/*' in partition_by
-            or '*/' in partition_by
-        )
-    ) -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view partition_by contains unsafe SQL tokens."
-        ) }}
-    {%- endif -%}
-    {%- set properties = config.get('properties') -%}
-    {%- if properties is not none and properties is not mapping -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view properties must be a dictionary."
-        ) }}
-    {%- endif -%}
-    {%- set refresh_on_run = config.get('refresh_on_run', false) -%}
-    {%- if refresh_on_run is not boolean -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view refresh_on_run must be true or false."
-        ) }}
-    {%- endif -%}
+    {% do doris__materialized_view_partition_expression() %}
+    {% do doris__materialized_view_effective_properties() %}
     {%- set wait_for_refresh = config.get('wait_for_refresh', true) -%}
     {%- if wait_for_refresh is not boolean -%}
         {{ exceptions.raise_compiler_error(
@@ -171,19 +417,17 @@
             ~ "refresh_wait_timeout."
         ) }}
     {%- endif -%}
-    {%- if config.get('grants') -%}
-        {{ exceptions.raise_compiler_error(
-            "materialized view grants are not supported by the Doris adapter."
-        ) }}
-    {%- endif -%}
 {%- endmacro %}
 
 {% macro doris__validate_materialized_view_distribution_config() -%}
-    {%- set distributed_by = config.get('distributed_by') -%}
+    {%- set distributed_by = doris__materialized_view_identifier_values(
+        'distributed_by',
+        config.get('distributed_by')
+    ) -%}
     {%- set distribution_type = (config.get(
         'distribution_type',
         'hash' if distributed_by else 'random'
-    ) or 'random') | lower -%}
+    ) or 'random') | trim | lower -%}
     {%- set buckets = config.get('buckets', 'auto') -%}
     {%- if distribution_type not in ['hash', 'random'] -%}
         {{ exceptions.raise_compiler_error(
@@ -214,21 +458,27 @@
 {%- endmacro %}
 
 {% macro doris__materialized_view_distribution_clause() -%}
-    {%- set distributed_by = config.get('distributed_by') -%}
+    {%- set distributed_by = doris__materialized_view_identifier_values(
+        'distributed_by',
+        config.get('distributed_by')
+    ) -%}
     {%- set distribution_type = (config.get(
         'distribution_type',
         'hash' if distributed_by else 'random'
-    ) or 'random') | lower -%}
+    ) or 'random') | trim | lower -%}
     {%- set buckets = config.get('buckets', 'auto') -%}
     distributed by {{ distribution_type }}
     {%- if distribution_type == 'hash' %}
-        ({{ doris__materialized_view_identifier_list(distributed_by) }})
+        ({{ doris__materialized_view_identifier_list(
+            distributed_by,
+            'distributed_by'
+        ) }})
     {%- endif %}
     buckets {{ buckets | lower if buckets is string else buckets }}
 {%- endmacro %}
 
 {% macro doris__materialized_view_properties_clause() -%}
-    {%- set properties = config.get('properties') or {} -%}
+    {%- set properties = doris__materialized_view_effective_properties() -%}
     {%- if properties %}
         properties (
         {%- for property in properties | dictsort -%}
@@ -241,38 +491,75 @@
 {%- endmacro %}
 
 {% macro doris__materialized_view_definition_hash(sql) -%}
-    {%- set distributed_by = config.get('distributed_by') -%}
+    {%- set duplicate_key = doris__materialized_view_identifier_values(
+        'duplicate_key',
+        config.get('duplicate_key')
+    ) -%}
+    {%- set distributed_by = doris__materialized_view_identifier_values(
+        'distributed_by',
+        config.get('distributed_by')
+    ) -%}
     {%- set distribution_type = (config.get(
         'distribution_type',
         'hash' if distributed_by else 'random'
-    ) or 'random') | lower -%}
+    ) or 'random') | trim | lower -%}
     {%- set schedule = config.get('refresh_schedule') or {} -%}
-    {%- set properties = config.get('properties') or {} -%}
+    {%- set partition_by =
+        doris__materialized_view_partition_expression()
+    -%}
+    {%- set properties = doris__materialized_view_effective_properties() -%}
     {%- set property_values = [] -%}
     {%- for property in properties | dictsort -%}
-        {%- do property_values.append(property[0] ~ '=' ~ property[1]) -%}
+        {%- do property_values.append(property[0]) -%}
+        {%- do property_values.append(property[1] | string) -%}
     {%- endfor -%}
+    {%- set persisted_column_docs = [] -%}
+    {%- if config.persist_column_docs() -%}
+        {%- for column in (model.get('columns', {}) or {}) | dictsort -%}
+            {%- set description = column[1].get('description', '') or '' -%}
+            {%- if description -%}
+                {%- set quoted = column[1].get('quote', false) -%}
+                {%- do persisted_column_docs.append(
+                    column[0] if quoted else column[0] | lower
+                ) -%}
+                {%- do persisted_column_docs.append(
+                    'quoted' if quoted else 'unquoted'
+                ) -%}
+                {%- do persisted_column_docs.append(description) -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set persisted_relation_description = (
+        model.get('description', '') if config.persist_relation_docs() else ''
+    ) -%}
+    {%- set buckets = config.get('buckets', 'auto') -%}
+    {%- set normalized_buckets = (
+        buckets | trim | lower if buckets is string else buckets | string
+    ) -%}
     {%- set definition = [
         sql | trim,
-        (config.get('build_mode', 'immediate') or 'immediate') | lower,
-        (config.get('refresh_method', 'auto') or 'auto') | lower,
-        (config.get('refresh_trigger', 'manual') or 'manual') | lower,
+        (config.get('build_mode', 'immediate') or 'immediate') | trim | lower,
+        (config.get('refresh_method', 'auto') or 'auto') | trim | lower,
+        (config.get('refresh_trigger', 'manual') or 'manual') | trim | lower,
         schedule.get('interval', ''),
-        (schedule.get('unit', '') or '') | lower,
+        (schedule.get('unit', '') or '') | trim | lower,
         schedule.get('start_time', ''),
-        config.get('duplicate_key') or '',
-        config.get('partition_by') or '',
+        doris__materialized_view_hash_values(duplicate_key),
+        partition_by or '',
         distribution_type,
-        distributed_by or '',
-        config.get('buckets', 'auto'),
-        property_values | join(','),
-        model.get('description', '')
+        doris__materialized_view_hash_values(distributed_by),
+        normalized_buckets,
+        doris__materialized_view_hash_values(property_values),
+        persisted_relation_description,
+        doris__materialized_view_hash_values(persisted_column_docs)
     ] -%}
-    {{ return(local_md5(definition | join('\u001f'))) }}
+    {{ return(local_md5(doris__materialized_view_hash_values(definition))) }}
 {%- endmacro %}
 
 {% macro doris__materialized_view_comment(sql, deployment_complete=false) -%}
-    {%- set description = model.get('description', '') -%}
+    {%- set description = (
+        model.get('description', '') if config.persist_relation_docs() else ''
+    ) -%}
     {%- set marker_name = (
         'definition-hash' if deployment_complete else 'deployment-pending'
     ) -%}
@@ -281,6 +568,80 @@
     ) ~ 'dbt-doris:' ~ marker_name ~ '='
       ~ doris__materialized_view_definition_hash(sql) -%}
     {{ return(comment) }}
+{%- endmacro %}
+
+{% macro doris__materialized_view_column_definitions(sql) -%}
+    {%- set documented_columns = model.get('columns', {}) or {} -%}
+    {%- if (
+        not execute
+        or not config.persist_column_docs()
+        or not documented_columns
+    ) -%}
+        {{ return('') }}
+    {%- endif -%}
+
+    {%- set column_probe_sql -%}
+        select *
+        from (
+            {{ sql }}
+        ) as `__dbt_materialized_view_columns`
+        where false
+        limit 0
+    {%- endset -%}
+    {%- set query_columns = adapter.get_column_schema_from_query(
+        column_probe_sql
+    ) -%}
+    {%- set definitions = [] -%}
+    {%- set matched_documented_columns = [] -%}
+    {%- for query_column in query_columns -%}
+        {%- set query_column_name = query_column.name | string -%}
+        {%- set match = namespace(name=none, info=none) -%}
+        {%- for documented_name, documented_info in documented_columns.items() -%}
+            {%- set documented_is_quoted = documented_info.get('quote', false) -%}
+            {%- if (
+                match.info is none
+                and (
+                    documented_name == query_column_name
+                    if documented_is_quoted
+                    else documented_name | lower == query_column_name | lower
+                )
+            ) -%}
+                {%- set match.name = documented_name -%}
+                {%- set match.info = documented_info -%}
+            {%- endif -%}
+        {%- endfor -%}
+        {%- set definition = (
+            '`' ~ query_column_name | replace("`", "``") ~ '`'
+        ) -%}
+        {%- if match.info is not none -%}
+            {%- do matched_documented_columns.append(match.name) -%}
+            {%- set description = match.info.get('description', '') or '' -%}
+            {%- if description -%}
+                {%- set definition = definition ~ " comment '"
+                    ~ description | replace("\\", "\\\\") | replace("'", "\\'")
+                    ~ "'" -%}
+            {%- endif -%}
+        {%- endif -%}
+        {%- do definitions.append(definition) -%}
+    {%- endfor -%}
+
+    {%- set missing_columns = [] -%}
+    {%- for documented_name, documented_info in documented_columns.items() -%}
+        {%- if (
+            documented_info.get('description')
+            and documented_name not in matched_documented_columns
+        ) -%}
+            {%- do missing_columns.append(documented_name) -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {%- if missing_columns -%}
+        {{ exceptions.warn(
+            "In materialized view " ~ model.get('name', '<model>')
+            ~ ": The following documented columns are not present in the model "
+            ~ "query: " ~ missing_columns | join(', ')
+        ) }}
+    {%- endif -%}
+    {{ return(definitions | join(', ')) }}
 {%- endmacro %}
 
 {% macro doris__materialized_view_definition_state(relation, sql) -%}
@@ -324,13 +685,10 @@
     {%- elif definition_state == 'pending' -%}
         {{ return('replace') }}
     {%- elif definition_state == 'complete' or definition_state is sameas true -%}
-        {%- set refresh_on_run = config.get('refresh_on_run', false) -%}
-        {%- if refresh_on_run is not boolean -%}
-            {{ exceptions.raise_compiler_error(
-                "materialized view refresh_on_run must be true or false."
-            ) }}
-        {%- endif -%}
-        {{ return('refresh' if refresh_on_run else 'skip') }}
+        {%- set refresh_trigger = (
+            config.get('refresh_trigger', 'manual') or 'manual'
+        ) | trim | lower -%}
+        {{ return('refresh' if refresh_trigger == 'manual' else 'skip') }}
     {%- endif -%}
 
     {%- set on_configuration_change = (
@@ -356,7 +714,9 @@
 
 {% macro doris__get_refresh_materialized_view_sql(relation) -%}
     {% do doris__validate_materialized_view_refresh_config() %}
-    {%- set refresh_method = (config.get('refresh_method', 'auto') or 'auto') | lower -%}
+    {%- set refresh_method = (
+        config.get('refresh_method', 'auto') or 'auto'
+    ) | trim | lower -%}
     refresh materialized view {{ relation }} {{ refresh_method }}
 {%- endmacro %}
 
@@ -505,12 +865,28 @@
     {%- endif -%}
 {%- endmacro %}
 
+{% macro doris__store_materialized_view_result(
+    action,
+    relation,
+    refresh_task=none
+) -%}
+    {%- set response = adapter.materialized_view_adapter_response(
+        action,
+        relation,
+        refresh_task
+    ) -%}
+    {% do store_result(
+        name='main',
+        response=response
+    ) %}
+{%- endmacro %}
+
 {% macro doris__get_create_materialized_view_as_sql(
     relation,
     sql
 ) -%}
     {%- set build_mode = config.get('build_mode', 'immediate') or 'immediate' -%}
-    {%- set build_mode = build_mode | lower -%}
+    {%- set build_mode = build_mode | trim | lower -%}
     {%- if build_mode not in ['immediate', 'deferred'] -%}
         {{ exceptions.raise_compiler_error(
             "Invalid materialized view build_mode '" ~ build_mode
@@ -520,14 +896,28 @@
     {% do doris__validate_materialized_view_refresh_config() %}
     {% do doris__validate_materialized_view_distribution_config() %}
     {% do doris__validate_materialized_view_ddl_config() %}
-    {%- set duplicate_key = config.get('duplicate_key') -%}
+    {%- set duplicate_key = doris__materialized_view_identifier_values(
+        'duplicate_key',
+        config.get('duplicate_key')
+    ) -%}
     {%- set pending_comment = doris__materialized_view_comment(sql) -%}
-    {%- set partition_by = config.get('partition_by') -%}
+    {%- set column_definitions =
+        doris__materialized_view_column_definitions(sql)
+    -%}
+    {%- set partition_by =
+        doris__materialized_view_partition_expression()
+    -%}
     create materialized view {{ relation }}
+    {%- if column_definitions %}
+    ({{ column_definitions }})
+    {%- endif %}
     build {{ build_mode }}
     {{ doris__materialized_view_refresh_clause() }}
     {%- if duplicate_key %}
-        duplicate key ({{ doris__materialized_view_identifier_list(duplicate_key) }})
+        duplicate key ({{ doris__materialized_view_identifier_list(
+            duplicate_key,
+            'duplicate_key'
+        ) }})
     {%- endif %}
     comment '{{ pending_comment | replace("\\", "\\\\") | replace("'", "\\'") }}'
     {%- if partition_by %}
@@ -541,9 +931,13 @@
 {% materialization materialized_view, adapter='doris' %}
     {%- set existing_relation = load_cached_relation(this) -%}
     {%- set target_relation = this.incorporate(type='materialized_view') -%}
+    {%- set backup_relation_type = 'table' -%}
+    {%- if existing_relation is not none and not existing_relation.is_view -%}
+        {%- set backup_relation_type = existing_relation.type -%}
+    {%- endif -%}
     {%- set backup_relation = target_relation.incorporate(
         path={'identifier': target_relation.identifier ~ '__dbt_backup'},
-        type=existing_relation.type if existing_relation is not none else 'table'
+        type=backup_relation_type
     ) -%}
     {%- set preexisting_backup_relation = load_cached_relation(
         backup_relation
@@ -552,13 +946,22 @@
         existing_relation is none
         and preexisting_backup_relation is not none
     ) -%}
-        {%- set restored_relation = this.incorporate(
-            type=preexisting_backup_relation.type
-        ) -%}
-        {% do adapter.rename_relation(
-            preexisting_backup_relation,
-            restored_relation
-        ) %}
+        {%- set restored_relation = this.incorporate(type=(
+            'table'
+            if preexisting_backup_relation.is_view
+            else preexisting_backup_relation.type
+        )) -%}
+        {% if preexisting_backup_relation.is_view %}
+            {% do doris__snapshot_view_to_table(
+                preexisting_backup_relation,
+                restored_relation
+            ) %}
+        {% else %}
+            {% do adapter.rename_relation(
+                preexisting_backup_relation,
+                restored_relation
+            ) %}
+        {% endif %}
         {%- set existing_relation = restored_relation -%}
         {%- set preexisting_backup_relation = none -%}
     {%- endif -%}
@@ -572,8 +975,37 @@
     {% do doris__validate_materialized_view_ddl_config() %}
     {%- set build_mode = (
         config.get('build_mode', 'immediate') or 'immediate'
-    ) | lower -%}
+    ) | trim | lower -%}
     {%- set definition_state = 'changed' -%}
+    {%- set grant_config = config.get('grants') -%}
+    {%- set backup_relation_to_drop = none -%}
+    {%- set refresh_task = none -%}
+
+    {# Snapshot an active View before this model's pre-hooks or sql_header can
+         alter the session used to evaluate it. Keep the source View online
+         until the replacement Materialized View is ready to publish. #}
+    {%- if existing_relation is not none and existing_relation.is_view -%}
+        {%- if preexisting_backup_relation is not none -%}
+            {% do adapter.drop_relation(preexisting_backup_relation) %}
+            {%- set preexisting_backup_relation = none -%}
+        {%- endif -%}
+        {% do doris__snapshot_view_data_to_table(
+            existing_relation,
+            backup_relation
+        ) %}
+    {%- endif -%}
+
+    {{ run_hooks(pre_hooks, inside_transaction=false) }}
+    {%- if execute -%}
+        {%- set frontends = run_query('show frontends') -%}
+        {% do adapter.validate_materialized_view_version(frontends) %}
+    {%- endif -%}
+    {#-- Doris DCL is non-transactional. Validate every requested principal
+         before CREATE, REPLACE, or type-switch DDL can expose a new
+         target definition. --#}
+    {% do doris__preflight_grants(target_relation, grant_config) %}
+    {#-- Outside-transaction pre-hooks may set session state used by metadata
+         queries, so inspect the deployed definition only after those hooks. --#}
     {%- if (
         existing_relation is not none
         and existing_relation.type == 'materialized_view'
@@ -582,11 +1014,35 @@
             doris__materialized_view_definition_state(existing_relation, sql)
         -%}
     {%- endif -%}
-    {%- set grant_config = config.get('grants') -%}
-    {%- set backup_relation_to_drop = none -%}
-
     {%- if preexisting_intermediate_relation is not none -%}
-        {% do adapter.drop_relation(preexisting_intermediate_relation) %}
+        {%- if (
+            existing_relation is not none
+            and existing_relation.type == 'materialized_view'
+            and preexisting_intermediate_relation.type == 'materialized_view'
+            and definition_state == 'pending'
+        ) -%}
+            {{ log(
+                'Rolling back incomplete materialized view deployment for: '
+                ~ target_relation,
+                info=true
+            ) }}
+            {% call statement('rollback_materialized_view') %}
+                {{ doris__get_swap_materialized_view_sql(
+                    target_relation,
+                    intermediate_relation
+                ) }}
+            {% endcall %}
+            {#-- The swap restored the previous complete MV at the target and
+                 moved the pending replacement back to the temporary name. --#}
+            {% do adapter.drop_relation(preexisting_intermediate_relation) %}
+            {%- set preexisting_intermediate_relation = none -%}
+            {#-- Retry interrupted deployments even when the configured change
+                 policy would otherwise continue or fail. --#}
+            {%- set definition_state = 'pending' -%}
+        {%- else -%}
+            {% do adapter.drop_relation(preexisting_intermediate_relation) %}
+            {%- set preexisting_intermediate_relation = none -%}
+        {%- endif -%}
     {%- endif -%}
     {%- if preexisting_backup_relation is not none -%}
         {%- if (
@@ -601,7 +1057,6 @@
             {% do adapter.drop_relation(preexisting_backup_relation) %}
         {%- endif -%}
     {%- endif -%}
-    {{ run_hooks(pre_hooks, inside_transaction=false) }}
     {%- set action = doris__materialized_view_action(
         existing_relation,
         definition_state,
@@ -616,12 +1071,6 @@
                 ~ target_relation.render() ~ "`"
             ) }}
         {%- endif -%}
-        {% do store_raw_result(
-            name='main',
-            message='skip ' ~ target_relation,
-            code='skip',
-            rows_affected=-1
-        ) %}
     {%- else -%}
         {{ run_hooks(pre_hooks, inside_transaction=true) }}
 
@@ -651,7 +1100,7 @@
             {% endcall %}
 
             {%- if build_mode == 'immediate' -%}
-                {% do doris__wait_for_materialized_view_refresh(
+                {% set refresh_task = doris__wait_for_materialized_view_refresh(
                     intermediate_relation,
                     previous_task_ids
                 ) %}
@@ -667,33 +1116,29 @@
                 {% endcall %}
             {%- elif action == 'replace_type' -%}
                 {%- set current_backup_relation = backup_relation.incorporate(
-                    type=existing_relation.type
+                    type=(
+                        'table'
+                        if existing_relation.is_view
+                        else existing_relation.type
+                    )
                 ) -%}
-                {% do adapter.rename_relation(
-                    existing_relation,
-                    current_backup_relation
-                ) %}
+                {% if existing_relation.is_view %}
+                    {% do adapter.drop_relation(existing_relation) %}
+                {% else %}
+                    {% do adapter.rename_relation(
+                        existing_relation,
+                        current_backup_relation
+                    ) %}
+                {% endif %}
                 {% do adapter.rename_relation(
                     intermediate_relation,
                     target_relation
                 ) %}
                 {%- set backup_relation_to_drop = current_backup_relation -%}
-                {% do store_raw_result(
-                    name='main',
-                    message='CREATE MATERIALIZED VIEW ' ~ target_relation,
-                    code='CREATE MATERIALIZED VIEW',
-                    rows_affected=-1
-                ) %}
             {%- else -%}
                 {% do adapter.rename_relation(
                     intermediate_relation,
                     target_relation
-                ) %}
-                {% do store_raw_result(
-                    name='main',
-                    message='CREATE MATERIALIZED VIEW ' ~ target_relation,
-                    code='CREATE MATERIALIZED VIEW',
-                    rows_affected=-1
                 ) %}
             {%- endif -%}
 
@@ -707,22 +1152,25 @@
             {% call statement('main') %}
                 {{ doris__get_refresh_materialized_view_sql(target_relation) }}
             {% endcall %}
-            {% do doris__wait_for_materialized_view_refresh(
+            {% set refresh_task = doris__wait_for_materialized_view_refresh(
                 target_relation,
                 previous_task_ids
             ) %}
         {%- endif -%}
 
-        {% set should_revoke = should_revoke(
-            existing_relation,
-            full_refresh_mode=true
-        ) %}
-        {% do apply_grants(
-            target_relation,
-            grant_config,
-            should_revoke=should_revoke
-        ) %}
+    {%- endif -%}
 
+    {% set grants_should_revoke = should_revoke(
+        existing_relation,
+        full_refresh_mode=action in ['replace', 'replace_type']
+    ) %}
+    {% do apply_grants(
+        target_relation,
+        grant_config,
+        should_revoke=grants_should_revoke
+    ) %}
+
+    {%- if action not in ['skip', 'continue'] -%}
         {{ run_hooks(post_hooks, inside_transaction=true) }}
         {%- if action in ['create', 'replace', 'replace_type'] -%}
             {% call statement('mark_materialized_view_deployment_complete') %}
@@ -733,8 +1181,15 @@
             {% endcall %}
         {%- endif -%}
         {% do adapter.commit() %}
+    {%- elif grant_config -%}
+        {% do adapter.commit() %}
     {%- endif -%}
 
+    {% do doris__store_materialized_view_result(
+        action,
+        target_relation,
+        refresh_task
+    ) %}
     {{ doris__drop_relation(intermediate_relation) }}
     {{ run_hooks(post_hooks, inside_transaction=false) }}
     {%- if backup_relation_to_drop is not none -%}

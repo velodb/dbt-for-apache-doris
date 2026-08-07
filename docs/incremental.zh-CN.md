@@ -2,7 +2,8 @@
 
 本文是 `materialized='incremental'` 的用户入口，说明可用版本、策略选择、
 配置方式、临时关系和失败重试语义。它与 Doris Async Materialized View 是两种
-不同能力；本文只说明 Incremental。
+不同能力；Async MV 请看
+[异步物化视图指南](materialized-view.zh-CN.md)。
 
 当前测试矩阵、功能覆盖和执行命令见
 [Incremental 测试文档](incremental-tests.zh-CN.md)；发布验证、SQL 次数判定和
@@ -13,20 +14,21 @@ dbt-doris 内置支持四种 Incremental 策略：`append`、`merge`、
 `on_schema_change='ignore'` 时，每个普通增量批次都只执行一条最终 DML，
 不会先把同一批数据写入物理临时表。
 
-## 源候选已验证版本（PR #2 待复验）
+## 历史源候选与当前 PR Head
 
 以下五个 Doris 官方发行版本已经在同一份干净源实现候选上完成真实集群验证。
-本实现选择性移入 PR #2 时排除了独立的 Grants/MV 改动；加入 Microbatch 前的
-移植工作树曾通过 252 项 Unit 和 40 项本地 Doris Incremental Functional，但
-正式发布前仍应在 PR Head 上重跑下表矩阵，不能把源提交日志当作新提交产生的日志：
+当前合并候选还包含主干后续加入的 Contracts、Persist Docs、Source Freshness、
+Store Failures、Grants 和 Async MV 能力，以及 PR #2 后续加入的 Microbatch；
+正式发布前仍应在合并后的 PR Head 上重跑下表矩阵，不能把源提交日志当作新提交
+产生的日志：
 
-| Doris | FE/BE 完整 Version | 完整 Functional | 聚焦 Incremental | 状态 |
+| Doris | FE/BE 完整 Version | 历史完整 Functional | 历史聚焦 Incremental | 当前 PR Head |
 | --- | --- | --- | --- | --- |
-| 2.1.11 | `doris-2.1.11-rc01-97b77e6cda` | 98 passed / 106 warnings / 290.51s | 36 passed / 27 warnings / 45.20s | 源候选通过；PR #2 待复验 |
-| 3.0.8 | `doris-3.0.8-rc01-09b0cc49a6` | 98 passed / 106 warnings / 143.87s | 36 passed / 27 warnings / 52.49s | 源候选通过；PR #2 待复验 |
-| 3.1.4 | `doris-3.1.4-rc02-7f5ba43de6` | 98 passed / 106 warnings / 150.81s | 36 passed / 27 warnings / 43.94s | 源候选通过；PR #2 待复验 |
-| 4.0.7 | `doris-4.0.7-rc02-35854e7e92a` | 98 passed / 106 warnings / 138.82s | 36 passed / 27 warnings / 39.69s | 源候选通过；PR #2 待复验 |
-| 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 98 passed / 106 warnings / 135.13s | 36 passed / 27 warnings / 39.48s | 源候选通过；dirty PR Head Microbatch 聚焦通过；完整复验待运行 |
+| 2.1.11 | `doris-2.1.11-rc01-97b77e6cda` | 98 passed / 106 warnings / 290.51s | 36 passed / 27 warnings / 45.20s | **43/43 passed** |
+| 3.0.8 | `doris-3.0.8-rc01-09b0cc49a6` | 98 passed / 106 warnings / 143.87s | 36 passed / 27 warnings / 52.49s | **43/43 passed** |
+| 3.1.4 | `doris-3.1.4-rc02-7f5ba43de6` | 98 passed / 106 warnings / 150.81s | 36 passed / 27 warnings / 43.94s | **43/43 passed** |
+| 4.0.7 | `doris-4.0.7-rc02-35854e7e92a` | 98 passed / 106 warnings / 138.82s | 36 passed / 27 warnings / 39.69s | **43/43 passed** |
+| 4.1.3 | `doris-4.1.3-rc02-7126cf65d96` | 98 passed / 106 warnings / 135.13s | 36 passed / 27 warnings / 39.48s | **43/43 passed** |
 
 五个版本都覆盖 `append`、MOW/MOR `merge`、可见 Sequence 列、整表/静态分区/
 动态分区 `insert_overwrite`、Schema Change、Full Refresh、默认策略路由、现有
@@ -35,23 +37,18 @@ dbt-doris 内置支持四种 Incremental 策略：`append`、`merge`、
 清理。每个版本的 FE/BE
 完整 Version 一致且 `Alive=true`，测试数据库和 Helper Relation 残留均为 0。
 
-PR #2 在该源候选之后又补了两类保护：Schema Change/自定义策略的 batch staging
-改为 keyless Duplicate + RANDOM/AUTO，以及已有目标的物理 Sequence mapping
-一致性校验。它们已通过 Unit 和本地开发集群 E2E，但尚未进入上表五个官方版本的
-PR Head 复验，不能从源候选结果推导为已通过。
+当前合并后的 PR Head 已通过 Incremental Functional `43/43`、聚焦 Unit/Adapter
+`116/116`、Shared Functional `12/12` 和完整 Unit `355/355`。完整 Adapter
+Functional 为 `153/153 passed`（207 warnings，163.14s），其中 Persist Docs 为
+`14/14 passed`。Lint、Build、Twine Check 通过，4.1.3 的测试 Schema 与 Helper
+残留为 0。当前 43 项版本运行已在五个精确版本全部通过，且每版 Version Gate、
+Schema/Helper 清理和隔离运行时清理均通过。
 
-本 PR 后续新增的 `microbatch` 也不在上表历史结果中。它依赖的命名分区
-`INSERT OVERWRITE` SQL 能力覆盖这些目标版本。当前 dirty PR Head 已在 FE/BE
-均为 `doris-0.0.0-ebec9530ba` 的本地开发集群完成 99 项完整 Functional 和 42 项
-聚焦 Incremental，并在带精确版本 Gate 的 Doris 4.1.3 上完成静态分区与 Dynamic
-Partition 两项 Microbatch 聚焦用例。后者不是 4.1.3 的完整 PR Head 矩阵证据；
-五个精确发行版本仍须完整重跑后，才能标记 Microbatch 兼容通过。
-
-验证环境是 dbt Core 1.12.0、dbt-doris 1.0.0、Python 3.12.13；被测 Adapter
-提交为 `7f6d9701140188f347e9f68a25ef9013551e4e48`，`dirty=false`。每份测试日志
+上表历史源候选的验证环境是 dbt Core 1.12.0、dbt-doris 1.0.0、Python 3.12.13；
+被测 Adapter 提交为 `7f6d9701140188f347e9f68a25ef9013551e4e48`，`dirty=false`。每份历史测试日志
 开头的 `DORIS_E2E_VERSION_EVIDENCE` JSON 都记录了目标发行版、实际 FE/BE
-Build、Gate 状态和 Adapter 身份。Unit 为 327 passed / 9 warnings / 57.99s，
-Flake8 与 diff check 通过。
+Build、Gate 状态和 Adapter 身份。该历史源候选的 Unit 为 327 passed / 9 warnings /
+57.99s，Flake8 与 diff check 通过。
 
 安装约束是 Python 3.10+ 和 dbt Core 1.12.x；上表的正式矩阵使用 Python 3.12.13
 与 dbt Core 1.12.0。
@@ -366,6 +363,27 @@ SELECT ...;
 Doris Unique Key 和可见 Sequence 映射列是物理关键列。增量运行不修改它们的
 类型；需要改变这些列时使用 `dbt run --full-refresh --select <model>`。
 
+## Grants 与 Persist Docs
+
+Incremental 支持 dbt 标准 `grants`。Adapter 会在目标 DML 前校验权限名和 Doris
+用户，成功写入后再把目标 Relation 的直接用户权限核对到声明状态；普通增量与
+Full Refresh 都保留这项能力。`grants: {}` 表示不修改现有权限，空用户列表则表示
+显式撤销对应权限。Doris Role 不在可安全核对的范围内，详细配置见
+[Doris Grants](foundation/grants.zh-CN.md)。
+
+Incremental 也支持 `persist_docs` 的 Relation 和 Column Comment。首次创建与
+Full Refresh 会完整写入文档，普通增量运行可以更新已有目标的注释。Doris CTAS
+不能声明列注释；启用 `persist_docs.columns` 时，首次创建和 Full Refresh 会先把
+模型写入私有 keyless `__dbt_docs_source`，再创建带注释的 intermediate 并复制
+数据，因而明确包含两次物理数据写入。只有完整复制成功后才发布新目标或交换旧
+目标；失败时不会发布半成品，重试会清理 Helper 后完整重建。这个私有 Source 不
+继承模型的 Key、Partition 或 Sequence 属性，最终目标仍保留这些配置。
+
+已有目标的普通后续增量不使用上述 Copy 路径。`append`、`merge`、
+`insert_overwrite` 和 `microbatch` 仍使用逻辑 View，每批只有一条目标 DML；注释
+在写入后按 Relation 生命周期更新。特殊字符、缺失列和需要 Full Refresh 的边界见
+[Doris Persist Docs](foundation/persist-docs.zh-CN.md)。
+
 ## 临时关系与 Full Refresh
 
 已有目标表的普通 `on_schema_change='ignore'` 增量运行会创建名为
@@ -381,11 +399,13 @@ CTAS 创建目标表。
   再向目标写入，确实有两次物理数据写入；`fail` 检测到差异时只有 staging
   CTAS，目标表不会发生第二次写入；
 - 自定义 Incremental 策略：使用物理 staging 保持 dbt 的标准策略参数契约；
-- 普通策略的 Full Refresh：先创建 intermediate table，再用 Doris 元数据交换
-  安全替换目标表。数据只写入 intermediate 一次，不会再写最终表一次；
+- 普通策略的 Full Refresh：未启用 `persist_docs.columns` 时先创建 intermediate
+  table，再用 Doris 元数据交换安全替换目标表。数据只写入 intermediate 一次，
+  不会再写最终表一次；启用列文档时使用上一节说明的两次写入例外；
 - Microbatch 的首次运行或 Full Refresh：第一个时间批次用 CTAS 创建目标或
   intermediate 并完成交换，后续每个时间批次各执行一次命名分区
-  `INSERT OVERWRITE`。每份批次数据仍只物化一次，不存在完整数据集的二次 copy。
+  `INSERT OVERWRITE`。未启用 `persist_docs.columns` 时每份批次数据只物化一次；
+  启用列文档时仅首次/Full Refresh 的建表批次使用两次写入例外。
 
 冻结批次的 staging 是 Adapter 内部的 keyless Duplicate Table，固定使用
 `DISTRIBUTED BY RANDOM BUCKETS AUTO` 和
@@ -395,8 +415,8 @@ Distribution、Partition、Contract 或 `sql_header`，因此 Source 首列是 D
 等不可作 Key/Hash 的类型，或 Schema Change 删除原分桶列时，也不会让 helper DDL
 失效。
 
-另有一类与“冻结增量批次”不同的物理例外：已有 Canonical View 转换为
-Incremental Table 时使用专用 CTAS Snapshot：
+另有一类与“冻结增量批次”不同的物理例外：Canonical View →
+Table/MV/Partition 的正向类型切换使用专用 CTAS Snapshot：
 
 ```sql
 CREATE TABLE backup
@@ -408,8 +428,7 @@ PROPERTIES (
 AS SELECT * FROM source_view;
 ```
 
-Incremental View → Table 类型切换路径绝不重放 View DDL，也不假设 View 保留创建时
-的 SQL Mode/Session 语义。
+Adapter 绝不重放 View DDL，也不假设 View 保留创建时的 SQL Mode/Session 语义。
 Doris 2.1.11 实测表明，查询旧 View 的结果可能受调用 Session 当前 `sql_mode`
 影响。因此 Snapshot 必须在新模型任何 Pre-hook、`sql_header` 或 DDL 之前执行，
 使用尚未被新模型改变的 Pre-model Session。Snapshot 固定 RANDOM/AUTO 分桶和
@@ -419,8 +438,9 @@ Doris 2.1.11 实测表明，查询旧 View 的结果可能受调用 Session 当�
 DOUBLE 等不可作 Key/Hash 的首列误选为物理 Key 或分桶列。该正向 Snapshot 是
 物理 Table。Snapshot Helper 遇到源/目标同名时会在执行任何 SQL 前失败；目标已
 存在时可能先做只读 Relation 元数据查询，但不会执行修改 SQL 或 Drop。
-Incremental 类型切换不依赖 Generic View Rename/Exchange，而是显式执行
-Snapshot、构建 Replacement、删除旧 View 和重命名 Replacement。
+Generic View Rename/Exchange 不提供模拟语义，直接拒绝。
+Incremental 类型切换不依赖这些 Generic 操作，而是显式执行 Snapshot、构建
+Replacement、删除旧 View 和重命名 Replacement。
 
 Snapshot 保存的是当时从旧 View 可查询的结果数据，不保存 View Definition、创建
 时 Session 状态、Comment、Grant 或完全一致的 Schema 属性。
@@ -428,34 +448,37 @@ Snapshot 保存的是当时从旧 View 可查询的结果数据，不保存 View
 CTAS 失败时，Canonical 旧 View 继续在线，且新模型 Hook、Header、DDL 均未执行。
 CTAS 成功后也不会立即删除旧 View：Adapter 先运行新模型上下文并完成 Replacement
 构建，期间 Canonical 名仍指向旧 View；Replacement 就绪后才 Drop 旧 View 并将
-Replacement Rename 为 Canonical。Snapshot Marker 保留到 Main Build、Index、
-Docs、事务内 Post-hook 和 Commit 成功后才清理；事务外 Post-hook 在清理之后运行。
+Replacement Rename 为 Canonical。Snapshot Marker 保留到 Main Build、适用的
+Index/Grants/Docs、事务内 Post-hook 和 Commit 成功后才清理；事务外 Post-hook
+在清理之后运行。
 SQL Mode 用例必须断言 Pre-model Session 当时实际查询到的数据以及上述 Ordering，
 不能再用 View 的创建模式推导查询结果。
 
-这类 Snapshot 仅用于正向类型切换，不改变 `append`、`merge`、
+这类 Snapshot 仅用于正向类型切换，不改变已有目标后续运行中 `append`、`merge`、
 `insert_overwrite` 或每个 `microbatch` 的逻辑临时 View + 一条最终 DML 契约。
 
 Doris 执行 `INSERT OVERWRITE` 时内部使用的临时分区属于数据库实现细节，
 不等同于 dbt-doris 的物理 staging table。
 
-`__dbt_backup` 的恢复边界与正向 CTAS 不同。Incremental 发现 Canonical
+`__dbt_backup` 的恢复边界与正向 CTAS 不同。Incremental/Partition 发现 Canonical
 缺失而 Backup 存在时，不会先把 Backup 恢复到 Canonical，也不会执行、Snapshot、
-Rename 或提前删除它。Backup 保持原名作为 Durable Marker；当前自动化覆盖 Legacy
-View 和 Table，Legacy View Backup 完全不走 CTAS。
+Rename 或提前删除它。Backup 保持原名作为 Durable Marker，可以是 Legacy View、
+Table 或 Async MV；Legacy View Backup 因此完全不走 CTAS。
 
 本轮直接从 Model SQL 完整构建 Canonical。因为 Canonical 在编译时仍不存在，
 `is_incremental()` 为 false；如果本轮再次失败，Canonical 继续缺失，下一轮仍走
 完整构建分支。旧数据只在 `__dbt_backup` 名下可查询，Adapter 不保证失败期间
-Canonical 名可用。只有 Main Build、Index、Docs、事务内 Post-hook 和 Commit 成功
-后，才删除 Durable Marker。Incremental 三轮 Functional 用例覆盖“保留 Marker →
-再次失败 → 成功构建后清理”的流程；事务外 Post-hook 在 Marker 清理后运行。
+Canonical 名可用。只有 Main Build、适用的 Index/Grants/Docs、事务内 Post-hook
+和 Commit 成功后，才删除 Durable Marker。Incremental 与 Partition 的三轮
+Functional 用例都覆盖“保留 Marker → 再次失败 → 成功构建后清理”的流程；
+事务外 Post-hook 在 Marker 清理后运行。
 
 若失败后 Canonical 旧 View 仍在线，遗留的物理 Snapshot 只是上一次尝试的 Marker；
 下一次运行在重新冻结旧 View 前先清理或替换该 Marker。若失败发生在 Drop View 与
 Rename Replacement 的切换窗口，使 Canonical 缺失，则物理 Marker 是唯一旧数据
-副本。Incremental 必须按上一段 Durable Marker 规则保留它，直到 Canonical
-完整重建成功。
+副本。对本文讨论的 Incremental/Partition，必须按上一段 Durable Marker 规则
+保留，直到 Canonical 完整重建成功；Table/MV Materialization 不使用该
+No-restore 规则，而是先恢复 Canonical 再重试。
 
 ## Hook 失败与重试
 
@@ -477,8 +500,8 @@ Doris 上的 ACID 回滚边界：
   覆盖相同时间分区并收敛。因此 Post-hook 失败后应先确认策略和目标数据，再决定
   是否原样重跑。
 
-前三种策略的这些状态已经在五个精确 Doris 版本上执行失败注入和成功重试验证；
-Microbatch 的正式版本失败矩阵仍待 PR Head 复验。
+前三种策略的历史源候选已在五个精确 Doris 版本上执行失败注入和成功重试验证；
+当前 43 项套件也已在同五个精确版本全部通过。
 
 ## 从旧实现迁移
 
@@ -509,3 +532,5 @@ dbt run --full-refresh --select <model>
   次数和失败注入矩阵；
 - Doris 4.1+ 原生 `MERGE INTO` 尚未实现；`merge` 仍使用本文说明的跨版本
   Unique Key Upsert 路径，`microbatch` 使用命名分区 `INSERT OVERWRITE`。
+- [异步物化视图指南](materialized-view.zh-CN.md)：Async MV 的独立配置与生命周期；
+- [dbt-doris TODO](dbt-doris-todo-list.zh-CN.md)：其余 Adapter 能力和后续增强。

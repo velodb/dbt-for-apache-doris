@@ -24,6 +24,7 @@ import inspect
 
 from dbt.adapters.capability import Capability
 from dbt.adapters.doris.impl import DorisAdapter
+from dbt_common.clients.agate_helper import table_from_rows
 
 
 def test_class_level_adapter_methods_remain_classmethods():
@@ -63,4 +64,35 @@ def test_quoted_contract_column_renders_without_an_adapter_instance():
     )
 
     assert len(columns) == 1
-    assert columns[0].get_col_name() == "`order`"
+    assert columns[0].get_col_name() == "order"
+    assert columns[0].get_table_column_constraint() == (
+        "cast(`order` as bigint) as `order`"
+    )
+
+
+def test_catalog_preserves_empty_doris_database_for_manifest_matching():
+    column_names = [
+        "table_database",
+        "table_schema",
+        "table_name",
+        "table_type",
+        "table_comment",
+        "table_owner",
+        "column_name",
+        "column_index",
+        "column_type",
+        "column_comment",
+    ]
+    table = table_from_rows(
+        [["", "analytics", "orders", "table", "orders docs", None, "id", 1, "int", "id docs"]],
+        column_names,
+        text_only_columns=[name for name in column_names if name != "column_index"],
+    )
+
+    filtered = DorisAdapter._catalog_filter_table(
+        table,
+        frozenset({("", "analytics")}),
+    )
+
+    assert len(filtered.rows) == 1
+    assert filtered.rows[0]["table_database"] == ""

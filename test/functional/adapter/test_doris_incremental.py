@@ -866,6 +866,20 @@ select 1 as id, 'unsafe' as value
 """
 
 
+INCREMENTAL_INVALID_GRANTS_SQL = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='append',
+    duplicate_key=['id'],
+    distributed_by=['id'],
+    grants={'select': ['dbt_incremental_definitely_missing_user']},
+    properties={'replication_num': '1'}
+) }}
+
+select 2 as id, 'must_not_be_written' as value
+"""
+
+
 INCREMENTAL_TARGET_GUARD_SQL = """
 {{ config(
     materialized='incremental',
@@ -1714,6 +1728,38 @@ class TestDorisIncrementalTargetPreflight:
             f"select sentinel from `{relation.schema}`.`{backup_name}`",
             fetch="all",
         ) == [(-2,)]
+
+
+class TestDorisIncrementalGrantPreflight:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {"incremental_invalid_grants.sql": INCREMENTAL_INVALID_GRANTS_SQL}
+
+    def test_invalid_grants_fail_before_incremental_dml(self, project):
+        relation = relation_from_name(
+            project.adapter,
+            "incremental_invalid_grants",
+        )
+        project.run_sql(
+            f"create table {relation} ("
+            "`id` int, `value` varchar(40)"
+            ") duplicate key(`id`) "
+            "distributed by hash(`id`) buckets auto "
+            'properties("replication_num" = "1")'
+        )
+        project.run_sql(f"insert into {relation} values (1, 'original')")
+
+        failure, statements = _run_and_capture_sql(
+            "incremental_invalid_grants",
+            expect_pass=False,
+        )
+        assert len(failure.results) == 1
+        assert "does not exist" in failure.results[0].message.lower()
+        assert not any("insert into" in statement for statement in statements)
+        assert project.run_sql(
+            f"select id, value from {relation}",
+            fetch="all",
+        ) == [(1, "original")]
 
 
 class TestDorisIncrementalHookFailures:

@@ -63,7 +63,9 @@
 
 {% macro doris__table_comment() -%}
   {% set description = model.get('description', "") %}
-  COMMENT '{{description}}'
+  {% if config.persist_relation_docs() and description %}
+    COMMENT '{{ description | replace("\\", "\\\\") | replace("'", "\\'") }}'
+  {% endif %}
 {%- endmacro %}
 
 {% macro doris__unique_key() -%}
@@ -103,8 +105,8 @@
 {%- endmacro %}
 
 {% macro doris__properties(default_properties=none) -%}
-  {# Work on a new dictionary. Mutating config.get('properties') leaked
-     adapter defaults into the parsed model config for later macros. #}
+  {# Work on a new dictionary. Mutating config.get('properties') leaks adapter
+     defaults into the parsed model config used by later macros. #}
   {% set properties = {} %}
   {% if default_properties %}
     {% do properties.update(default_properties) %}
@@ -152,25 +154,6 @@
     {% endcall %}
 {%- endmacro %}
 
-{% macro doris__view_query_from_show_create(show_create_sql) -%}
-  {# SHOW CREATE VIEW includes an output-column list before the real AS
-     delimiter. Split only on a complete AS token: identifiers such as
-     ASSET_ID must not be mistaken for that delimiter. #}
-  {% set parts = modules.re.split(
-      '\\s+AS\\s+',
-      show_create_sql,
-      maxsplit=1,
-      flags=modules.re.IGNORECASE
-  ) %}
-  {% if parts | length != 2 %}
-    {% do exceptions.raise_compiler_error(
-        "Could not extract the Doris view query from SHOW CREATE VIEW output."
-    ) %}
-  {% endif %}
-  {{ return(parts[1] | trim | trim(';')) }}
-{%- endmacro %}
-
-
 {% macro doris__snapshot_view_data_to_table(
     from_relation,
     to_relation
@@ -207,65 +190,49 @@
   {% do adapter.cache_added(to_relation) %}
 {%- endmacro %}
 
-
 {% macro doris__snapshot_view_to_table(
     from_relation,
     to_relation
 ) -%}
   {% do doris__snapshot_view_data_to_table(from_relation, to_relation) %}
+  {# Callers that need an immediate conversion drop the source only after the
+     physical recovery snapshot succeeds. Active type replacements use the
+     data-only helper and keep the source online until the replacement is
+     ready to publish. #}
   {% do adapter.drop_relation(from_relation) %}
 {%- endmacro %}
 
 {% macro doris__rename_relation(from_relation, to_relation) -%}
+  {% if from_relation.is_view or to_relation.is_view %}
+    {% do exceptions.raise_compiler_error(
+        "Doris cannot safely rename a View. Materializations must snapshot "
+        ~ "the View to a Table."
+    ) %}
+  {% endif %}
+
   {% call statement('drop_relation') %}
     drop {{ 'materialized view' if to_relation.type == 'materialized_view' else to_relation.type }} if exists {{ to_relation }}
   {% endcall %}
   {% call statement('rename_relation') %}
-    {% if to_relation.is_view %}
-    {% set results = run_query('show create view ' + from_relation.render() ) %}
-    create view {{ to_relation }} as {{ doris__view_query_from_show_create(
-        results[0]['Create View']
-    ) }}
-    {% elif to_relation.type == 'materialized_view' %}
+    {% if to_relation.type == 'materialized_view' %}
     alter materialized view {{ from_relation }} rename `{{ to_relation.table | replace("`", "``") }}`
     {% else %}
     alter table {{ from_relation }} rename {{ to_relation.table }}
     {% endif %}
   {% endcall %}
 
-  {% if to_relation.is_view %}
-    {% call statement('rename_relation_end_drop_old') %}
-      drop view if exists {{ from_relation }}
-    {% endcall %}
-  {% endif %}
-
 {%- endmacro %}
 
 
 {% macro exchange_relation(relation1, relation2, is_drop_r1=false) -%}
-
-  {% if relation2.is_view %}
-    {% set from_results = run_query('show create view ' + relation1.render() ) %}
-    {% set to_results = run_query('show create view ' + relation2.render() ) %}
-      {% call statement('exchange_view_relation') %}
-        alter view {{ relation1 }} as {{ doris__view_query_from_show_create(
-            to_results[0]['Create View']
-        ) }}
-      {% endcall %}
-    {% if is_drop_r1 %}
-      {% do doris__drop_relation(relation2) %}
-    {% else %}
-      {% call statement('exchange_view_relation') %}
-        alter view {{ relation2 }} as {{ doris__view_query_from_show_create(
-            from_results[0]['Create View']
-        ) }}
-      {% endcall %}
-    {% endif %}
-  {% else %}
-    {% call statement('exchange_relation') %}
-      ALTER TABLE {{ relation1 }} REPLACE WITH TABLE `{{ relation2.table }}` PROPERTIES('swap' = '{{not is_drop_r1}}');
-    {% endcall %}
+  {% if relation1.is_view or relation2.is_view %}
+    {% do exceptions.raise_compiler_error(
+        "Doris cannot safely exchange Views."
+    ) %}
   {% endif %}
+  {% call statement('exchange_relation') %}
+    ALTER TABLE {{ relation1 }} REPLACE WITH TABLE `{{ relation2.table }}` PROPERTIES('swap' = '{{not is_drop_r1}}');
+  {% endcall %}
 
 {%- endmacro %}
 

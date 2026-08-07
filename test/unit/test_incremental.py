@@ -255,6 +255,60 @@ def test_view_snapshot_rejects_existing_destination_without_dropping_it():
     assert runner.statements == []
 
 
+def test_rename_view_is_rejected_before_any_statement():
+    runner = MacroRunner(
+        "adapters/relation.sql",
+        context={"adapter": object.__new__(DorisAdapter)},
+    )
+
+    with pytest.raises(CapturedCompilerError, match="cannot safely rename"):
+        runner.render(
+            "doris__rename_relation",
+            FakeRelation(relation_type="view"),
+            FakeRelation(identifier="backup", relation_type="view"),
+        )
+
+    assert runner.statements == []
+
+
+def test_adapter_rejects_view_rename_before_mutating_cache(monkeypatch):
+    adapter = object.__new__(DorisAdapter)
+    side_effects = []
+    monkeypatch.setattr(
+        adapter,
+        "cache_renamed",
+        lambda *args, **kwargs: side_effects.append("cache"),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "execute_macro",
+        lambda *args, **kwargs: side_effects.append("macro"),
+    )
+
+    with pytest.raises(DbtRuntimeError, match="cannot safely rename a View"):
+        adapter.rename_relation(
+            FakeRelation(relation_type="view"),
+            FakeRelation(identifier="backup", relation_type="view"),
+        )
+
+    assert side_effects == []
+
+
+def test_exchange_views_is_rejected_before_any_statement():
+    runner = MacroRunner(
+        "adapters/relation.sql",
+        context={"adapter": object.__new__(DorisAdapter)},
+    )
+    with pytest.raises(CapturedCompilerError, match="cannot safely exchange"):
+        runner.render(
+            "exchange_relation",
+            FakeRelation(identifier="first", relation_type="view"),
+            FakeRelation(identifier="second", relation_type="view"),
+        )
+
+    assert runner.statements == []
+
+
 def test_schema_change_comparison_is_case_insensitive_for_doris_columns():
     source_relation = DorisRelation.create(
         schema="analytics",

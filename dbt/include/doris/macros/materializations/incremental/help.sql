@@ -844,19 +844,20 @@ schema manually, or run:
 
 
 {% macro doris__table_model_from_create_table(create_table) %}
-    {% set normalized_ddl = create_table | upper %}
+    {# SHOW CREATE emits the physical key clause on its own line. Anchor the
+       match there so arbitrary table/column comments containing text such as
+       "UNIQUE KEY(" cannot spoof the target model. #}
+    {% set key_clause = modules.re.search(
+        '(?im)^[ \t]*(UNIQUE|AGGREGATE|DUPLICATE)[ \t]+KEY[ \t]*[(]',
+        create_table
+    ) %}
     {% set keyless_duplicate = modules.re.search(
         '(?im)^[ \t]*"enable_duplicate_without_keys_by_default"[ \t]*=[ \t]*"true"[ \t]*,?[ \t]*\r?$',
         create_table
     ) %}
-    {% if 'UNIQUE KEY(' in normalized_ddl %}
-        {{ return('unique') }}
-    {% elif 'AGGREGATE KEY(' in normalized_ddl %}
-        {{ return('aggregate') }}
-    {% elif (
-        'DUPLICATE KEY(' in normalized_ddl
-        or keyless_duplicate is not none
-    ) %}
+    {% if key_clause is not none %}
+        {{ return(key_clause.group(1) | lower) }}
+    {% elif keyless_duplicate is not none %}
         {{ return('duplicate') }}
     {% endif %}
     {{ return('unknown') }}

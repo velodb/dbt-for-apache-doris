@@ -71,6 +71,99 @@
 {%- endmacro %}
 
 
+{% macro doris__documented_column_description(column_name) -%}
+    {%- set documented = namespace(value=none) -%}
+    {%- for documented_name, column_info in model.get('columns', {}).items() -%}
+        {%- set quoted = column_info.get('quote', false) -%}
+        {%- if (quoted and documented_name == column_name)
+            or (not quoted and documented_name | lower == column_name | lower) -%}
+            {%- set documented.value = column_info.get('description') or none -%}
+        {%- endif -%}
+    {%- endfor -%}
+    {{ return(documented.value) }}
+{%- endmacro %}
+
+
+{% macro doris__documented_table_source_relation(relation) -%}
+    {{ return(relation.incorporate(
+        path={'identifier': relation.identifier ~ '__dbt_docs_source'},
+        type='table'
+    )) }}
+{%- endmacro %}
+
+
+{% macro doris__create_documented_table_as(
+    temporary,
+    relation,
+    sql,
+    unique=false,
+    include_sql_header=true,
+    sql_is_prepared=false
+) -%}
+    {#-- Doris CTAS cannot declare column comments. Build the query once in a
+         private keyless source table, read Doris' exact inferred types, then
+         create the final staging table with inline comments and copy the rows.
+         The private table must not inherit target keys, partitions, or
+         Unique-only properties such as function_column.sequence_col. Inline
+         comments preserve arbitrary quotes; ALTER COMMENT does not on all
+         supported Doris versions. --#}
+    {%- set source_relation = doris__documented_table_source_relation(
+        relation
+    ) -%}
+    {% do doris__drop_relation(source_relation) %}
+
+    {% set sql_header = config.get('sql_header', none) %}
+    {% if include_sql_header and sql_header is not none %}
+        {% do run_query(sql_header) %}
+    {% endif %}
+    {% set source_sql = (
+        sql if sql_is_prepared else doris__table_colume_type(sql)
+    ) %}
+    {% call statement('create_documented_table_source') %}
+        {{ doris__create_incremental_staging_table(
+            source_relation,
+            source_sql
+        ) }}
+    {% endcall %}
+
+    {%- set source_columns = adapter.get_columns_in_relation(source_relation) -%}
+    {% call statement('create_documented_table') %}
+        create table {{ relation.include(database=False) }} (
+        {%- for column in source_columns %}
+            `{{ column.name | replace("`", "``") }}` {{ column.data_type }}
+            {%- set description = doris__documented_column_description(column.name) -%}
+            {%- if description %}
+                COMMENT '{{ description | replace("\\", "\\\\") | replace("'", "\\'") }}'
+            {%- endif -%}
+            {{- "," if not loop.last }}
+        {%- endfor %}
+        )
+        {% if unique %}
+            {{ doris__unique_key() }}
+        {% else %}
+            {{ doris__duplicate_key() }}
+        {% endif %}
+        {{ doris__table_comment() }}
+        {{ doris__partition_by() }}
+        {{ doris__distributed_by() }}
+        {% if unique %}
+            {{ doris__properties({
+                'enable_unique_key_merge_on_write': 'true'
+            }) }}
+        {% else %}
+            {{ doris__properties() }}
+        {% endif %}
+    {% endcall %}
+
+    {% call statement('main') %}
+        insert into {{ relation }}
+        select * from {{ source_relation }}
+    {% endcall %}
+
+    {% do doris__drop_relation(source_relation) %}
+{%- endmacro %}
+
+
 {#--
     Create a frozen source for schema-changing runs and custom strategies.
 

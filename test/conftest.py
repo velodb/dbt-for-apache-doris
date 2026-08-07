@@ -163,7 +163,9 @@ def dbt_project_yml(project_root, project_config_update, doris_test_replication_
     covers inherited tests as well as local ones.
 
     Resource-level config still wins, so a test that needs a different replica
-    count can set `+properties` on its own models.
+    count can set `+properties` on its own models or data tests. Store Failures
+    materializes audit relations from `data_tests`, so those resources need the
+    same single-BE-safe default as ordinary models.
     """
     project_config = {
         "name": "test",
@@ -177,7 +179,7 @@ def dbt_project_yml(project_root, project_config_update, doris_test_replication_
             project_config.update(yaml.safe_load(project_config_update))
 
     properties = {"replication_num": doris_test_replication_num}
-    for resource_type in ("models", "seeds", "snapshots"):
+    for resource_type in ("models", "seeds", "snapshots", "data_tests"):
         resource_config = project_config.setdefault(resource_type, {})
         existing = resource_config.get("+properties") or {}
         # Keep whatever the test asked for; only supply what is missing.
