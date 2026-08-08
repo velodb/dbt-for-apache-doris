@@ -84,6 +84,14 @@
 {%- endmacro %}
 
 
+{% macro doris__documented_table_source_relation(relation) -%}
+    {{ return(relation.incorporate(
+        path={'identifier': relation.identifier ~ '__dbt_docs_source'},
+        type='table'
+    )) }}
+{%- endmacro %}
+
+
 {% macro doris__create_documented_table_as(
     temporary,
     relation,
@@ -93,23 +101,28 @@
     sql_is_prepared=false
 ) -%}
     {#-- Doris CTAS cannot declare column comments. Build the query once in a
-         private source table, read Doris' exact inferred types, then create the
-         final staging table with inline comments and copy the rows. Inline
+         private keyless source table, read Doris' exact inferred types, then
+         create the final staging table with inline comments and copy the rows.
+         The private table must not inherit target keys, partitions, or
+         Unique-only properties such as function_column.sequence_col. Inline
          comments preserve arbitrary quotes; ALTER COMMENT does not on all
          supported Doris versions. --#}
-    {%- set source_relation = relation.incorporate(
-        path={'identifier': relation.identifier ~ '__dbt_docs_source'},
-        type='table'
+    {%- set source_relation = doris__documented_table_source_relation(
+        relation
     ) -%}
     {% do doris__drop_relation(source_relation) %}
 
+    {% set sql_header = config.get('sql_header', none) %}
+    {% if include_sql_header and sql_header is not none %}
+        {% do run_query(sql_header) %}
+    {% endif %}
+    {% set source_sql = (
+        sql if sql_is_prepared else doris__table_colume_type(sql)
+    ) %}
     {% call statement('create_documented_table_source') %}
-        {{ doris__create_table_as(
-            temporary,
+        {{ doris__create_incremental_staging_table(
             source_relation,
-            sql,
-            include_sql_header,
-            sql_is_prepared
+            source_sql
         ) }}
     {% endcall %}
 
@@ -156,11 +169,12 @@
 
     This is deliberately not create_table_as(True, ...). Doris does not have a
     non-physical CTAS mode on the supported 2.1+ baseline, and inheriting the
-    target model's partition clauses or Unique-Key-only properties can make a
-    batch staging table invalid. Keep only distribution and one replication
-    setting here.
+    target model's keys, distribution, partition clauses, or Unique-Key-only
+    properties can make a batch staging table invalid when the source schema
+    changes. Use a keyless Duplicate table with random distribution and keep
+    only one replication setting.
 --#}
-{% macro doris__create_incremental_staging_table(relation, source_sql) -%}
+{% macro doris__physical_helper_table_properties() -%}
     {% set configured_properties = config.get('properties', validator=validation.any[dict]) %}
     {% set replication_num = config.get('replication_num') %}
     {% if replication_num is none and configured_properties %}
@@ -172,14 +186,32 @@
             'replication_allocation'
         ) %}
     {% endif %}
+    {% set helper_properties = {
+        'enable_duplicate_without_keys_by_default': 'true'
+    } %}
+    {% if replication_num is not none %}
+        {% do helper_properties.update({
+            'replication_num': replication_num
+        }) %}
+    {% elif replication_allocation is not none %}
+        {% do helper_properties.update({
+            'replication_allocation': replication_allocation
+        }) %}
+    {% endif %}
+    {{ return(helper_properties) }}
+{%- endmacro %}
+
+
+{% macro doris__create_incremental_staging_table(relation, source_sql) -%}
+    {% set helper_properties = doris__physical_helper_table_properties() %}
 
     create table {{ relation.include(database=False) }}
-    {{ doris__distributed_by() }}
-    {% if replication_num is not none %}
-    properties ("replication_num" = "{{ replication_num }}")
-    {% elif replication_allocation is not none %}
-    properties ("replication_allocation" = "{{ replication_allocation }}")
-    {% endif %}
+    distributed by random buckets auto
+    properties (
+        {% for key, value in helper_properties.items() %}
+        "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
+        {% endfor %}
+    )
     as {{ source_sql }};
 {%- endmacro %}
 
@@ -195,37 +227,12 @@
     columns remain valid snapshot data.
 --#}
 {% macro doris__create_view_snapshot_table(relation, source_relation) -%}
-    {% set configured_properties = config.get(
-        'properties',
-        validator=validation.any[dict]
-    ) %}
-    {% set replication_num = config.get('replication_num') %}
-    {% if replication_num is none and configured_properties %}
-        {% set replication_num = configured_properties.get('replication_num') %}
-    {% endif %}
-    {% set replication_allocation = none %}
-    {% if replication_num is none and configured_properties %}
-        {% set replication_allocation = configured_properties.get(
-            'replication_allocation'
-        ) %}
-    {% endif %}
-    {% set snapshot_properties = {
-        'enable_duplicate_without_keys_by_default': 'true'
-    } %}
-    {% if replication_num is not none %}
-        {% do snapshot_properties.update({
-            'replication_num': replication_num
-        }) %}
-    {% elif replication_allocation is not none %}
-        {% do snapshot_properties.update({
-            'replication_allocation': replication_allocation
-        }) %}
-    {% endif %}
+    {% set helper_properties = doris__physical_helper_table_properties() %}
 
     create table {{ relation.include(database=False) }}
     distributed by random buckets auto
     properties (
-        {% for key, value in snapshot_properties.items() %}
+        {% for key, value in helper_properties.items() %}
         "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
         {% endfor %}
     )

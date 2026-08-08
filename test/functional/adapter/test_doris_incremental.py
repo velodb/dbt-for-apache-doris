@@ -24,16 +24,23 @@ Tests for Doris incremental materialization:
 - merge upserts MOW or MOR Unique Key tables without physical staging
 - Sequence columns keep Doris's native conflict-ordering semantics
 - insert_overwrite performs real whole-table and partition overwrites
+- microbatch replaces one exact time partition, including an empty batch
 - full refresh replaces the target and preserves its Doris table configuration
 """
 
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from dbt.tests.adapter.incremental.test_incremental_on_schema_change import (
     BaseIncrementalOnSchemaChange,
 )
-from dbt.tests.util import relation_from_name, run_dbt, set_model_file
+from dbt.tests.util import (
+    patch_microbatch_end_time,
+    relation_from_name,
+    run_dbt,
+    set_model_file,
+)
 
 
 def _run_and_capture_sql(model_name, args=None, expect_pass=True):
@@ -488,6 +495,84 @@ select 2 as part_id, 'dynamic_unchanged_p2' as value
 """
 
 
+# -- Microbatch: Core filters refs to [start, end), and Doris replaces that
+# -- exact named RANGE partition. Unit coverage separately proves that existing
+# -- physical partition names do not have to follow the generated convention.
+
+MICROBATCH_TODAY = datetime.now(timezone.utc).date()
+MICROBATCH_DATE_1 = MICROBATCH_TODAY - timedelta(days=3)
+MICROBATCH_DATE_2 = MICROBATCH_TODAY - timedelta(days=2)
+MICROBATCH_DATE_3 = MICROBATCH_TODAY - timedelta(days=1)
+
+
+MICROBATCH_INPUT_SQL = """
+{{ config(
+    materialized='table',
+    event_time='event_time',
+    duplicate_key=['id', 'event_time'],
+    distributed_by=['id'],
+    properties={'replication_num': '1'}
+) }}
+
+select 1 as id, cast('__DATE_1__ 00:00:00' as datetime) as event_time,
+       'first' as value
+union all
+select 2 as id, cast('__DATE_2__ 00:00:00' as datetime) as event_time,
+       'second' as value
+union all
+select 3 as id, cast('__DATE_3__ 00:00:00' as datetime) as event_time,
+       'third' as value
+"""
+MICROBATCH_INPUT_SQL = (
+    MICROBATCH_INPUT_SQL.replace("__DATE_1__", MICROBATCH_DATE_1.isoformat())
+    .replace("__DATE_2__", MICROBATCH_DATE_2.isoformat())
+    .replace("__DATE_3__", MICROBATCH_DATE_3.isoformat())
+)
+
+
+INCREMENTAL_MICROBATCH_SQL = """
+{{ config(
+    materialized='incremental',
+    incremental_strategy='microbatch',
+    event_time='event_time',
+    batch_size='day',
+    begin=modules.datetime.datetime(__YEAR__, __MONTH__, __DAY__, 0, 0, 0),
+    duplicate_key=['id', 'event_time'],
+    partition_by=['event_time'],
+    partition_type='RANGE',
+    distributed_by=['id'],
+    properties={
+        'replication_num': '1'
+    }
+) }}
+
+select id, event_time, value
+from {{ ref('microbatch_input') }}
+"""
+INCREMENTAL_MICROBATCH_SQL = (
+    INCREMENTAL_MICROBATCH_SQL.replace("__YEAR__", str(MICROBATCH_DATE_1.year))
+    .replace("__MONTH__", str(MICROBATCH_DATE_1.month))
+    .replace("__DAY__", str(MICROBATCH_DATE_1.day))
+)
+
+INCREMENTAL_MICROBATCH_DYNAMIC_SQL = INCREMENTAL_MICROBATCH_SQL.replace(
+    """    properties={
+        'replication_num': '1'
+    }""",
+    """    properties={
+        'replication_num': '1',
+        'dynamic_partition.enable': 'true',
+        'dynamic_partition.time_unit': 'DAY',
+        'dynamic_partition.time_zone': 'UTC',
+        'dynamic_partition.prefix': 'dyn',
+        'dynamic_partition.start': '-5',
+        'dynamic_partition.end': '1',
+        'dynamic_partition.buckets': '1',
+        'dynamic_partition.create_history_partition': 'true'
+    }""",
+)
+
+
 # -- Full refresh --
 
 INCREMENTAL_FULL_REFRESH_SQL = """
@@ -650,9 +735,9 @@ INCREMENTAL_CUSTOM_STRATEGY_SQL = """
 ) }}
 
 {% if is_incremental() %}
-select 2 as id, 'incremental' as value
+select cast(2.5 as double) as measure, 2 as id, 'incremental' as value
 {% else %}
-select 1 as id, 'initial' as value
+select 1 as id, cast(1.0 as double) as measure, 'initial' as value
 {% endif %}
 """
 
@@ -801,11 +886,12 @@ INCREMENTAL_TARGET_GUARD_SQL = """
     incremental_strategy=var('guard_strategy'),
     unique_key=var('guard_unique_key', none),
     distributed_by=['id'],
-    properties={'replication_num': '1'},
+    properties=var('guard_properties', {'replication_num': '1'}),
     pre_hook='select * from __dbt_incremental_target_guard_hook__'
 ) }}
 
-select 2 as id, 2 as tenant_id, 'must_not_be_written' as value
+select 2 as id, 2 as tenant_id, 2 as sequence_id,
+       'must_not_be_written' as value
 """
 
 
@@ -1059,6 +1145,37 @@ class TestDorisIncrementalAppend:
             for index, statement in enumerate(statements)
             if "drop view if exists" in statement and backup_name in statement
         )
+        assert _dbt_helper_relations(project, relation) == []
+
+    def test_append_accepts_keyless_duplicate_target(self, project):
+        relation = relation_from_name(project.adapter, "incremental_append")
+        project.run_sql(f"drop table if exists {relation}")
+        project.run_sql(
+            f"create table {relation} (`id` int, `name` varchar(40)) "
+            "distributed by random buckets auto "
+            'properties ("enable_duplicate_without_keys_by_default" = '
+            '"true", "replication_num" = "1")'
+        )
+        project.run_sql(f"insert into {relation} values (1, 'existing')")
+
+        results, statements = _run_and_capture_sql("incremental_append")
+        assert len(results) == 1
+        _assert_logical_view_staging(statements)
+
+        ddl = project.run_sql(
+            f"show create table {relation}",
+            fetch="one",
+        )[1].lower()
+        assert "duplicate key(" not in ddl
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in ddl
+        assert project.run_sql(
+            f"select id, name from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "existing"),
+            (4, "dave"),
+            (5, "eve"),
+        ]
         assert _dbt_helper_relations(project, relation) == []
 
 
@@ -1425,6 +1542,68 @@ class TestDorisIncrementalTargetPreflight:
                 ("configured unique_key", "physical unique key"),
                 id="merge-rejects-physical-key-mismatch",
             ),
+            pytest.param(
+                (
+                    "unique key(`id`) "
+                    "distributed by hash(`id`) buckets 1 "
+                    'properties("replication_num" = "1", '
+                    '"function_column.sequence_col" = "sequence_id")'
+                ),
+                "{guard_strategy: merge, guard_unique_key: [id]}",
+                (
+                    "uses physical",
+                    "sequence mapping column 'sequence_id'",
+                    "does not configure 'function_column.sequence_col'",
+                ),
+                id="merge-rejects-unconfigured-physical-sequence",
+            ),
+            pytest.param(
+                (
+                    "unique key(`id`) "
+                    "distributed by hash(`id`) buckets 1 "
+                    'properties("replication_num" = "1", '
+                    '"function_column.sequence_type" = "bigint")'
+                ),
+                "{guard_strategy: merge, guard_unique_key: [id]}",
+                (
+                    "cannot safely write",
+                    "__doris_sequence_col__",
+                ),
+                id="merge-rejects-hidden-physical-sequence",
+            ),
+            pytest.param(
+                (
+                    "unique key(`id`) "
+                    "distributed by hash(`id`) buckets 1 "
+                    'properties("replication_num" = "1", '
+                    '"function_column.sequence_type" = "bigint")'
+                ),
+                "{guard_strategy: insert_overwrite}",
+                (
+                    "incremental strategy 'insert_overwrite'",
+                    "cannot safely write",
+                    "__doris_sequence_col__",
+                ),
+                id="overwrite-rejects-hidden-physical-sequence",
+            ),
+            pytest.param(
+                (
+                    "unique key(`id`) "
+                    "distributed by hash(`id`) buckets 1 "
+                    'properties("replication_num" = "1")'
+                ),
+                (
+                    "{guard_strategy: merge, guard_unique_key: [id], "
+                    "guard_properties: {replication_num: '1', "
+                    "function_column.sequence_col: sequence_id}}"
+                ),
+                (
+                    "configured sequence mapping column",
+                    "'sequence_id'",
+                    "no visible sequence mapping",
+                ),
+                id="merge-rejects-configured-sequence-missing-physically",
+            ),
         ],
     )
     def test_mismatch_fails_before_hooks_staging_and_dml(
@@ -1440,21 +1619,59 @@ class TestDorisIncrementalTargetPreflight:
         project.run_sql(f"drop table if exists {relation}")
         project.run_sql(
             f"create table {relation} ("
-            "`id` int, `tenant_id` int, `value` varchar(40)"
+            "`id` int, `tenant_id` int, `sequence_id` bigint, "
+            "`value` varchar(40)"
             f") {target_table_tail}"
         )
-        project.run_sql(f"insert into {relation} values (1, 1, 'original')")
+        if "function_column.sequence_type" in target_table_tail:
+            project.run_sql(
+                f"insert into {relation} "
+                "(`id`, `tenant_id`, `sequence_id`, `value`, "
+                "`__DORIS_SEQUENCE_COL__`) "
+                "values (1, 1, 1, 'original', 1)"
+            )
+        else:
+            project.run_sql(
+                f"insert into {relation} values (1, 1, 1, 'original')"
+            )
+
+        temp_name = f"{relation.identifier}__dbt_tmp"
+        backup_name = f"{relation.identifier}__dbt_backup"
+        project.run_sql(
+            f"drop view if exists `{relation.schema}`.`{temp_name}`"
+        )
+        project.run_sql(
+            f"drop table if exists `{relation.schema}`.`{backup_name}`"
+        )
+        project.run_sql(
+            f"create view `{relation.schema}`.`{temp_name}` as "
+            "select -1 as sentinel"
+        )
+        project.run_sql(
+            f"create table `{relation.schema}`.`{backup_name}` "
+            "(`sentinel` int) duplicate key(`sentinel`) "
+            "distributed by hash(`sentinel`) buckets 1 "
+            'properties ("replication_num" = "1")'
+        )
+        project.run_sql(
+            f"insert into `{relation.schema}`.`{backup_name}` values (-2)"
+        )
 
         ddl_before = project.run_sql(
             f"show create table {relation}",
             fetch="one",
         )[1]
         rows_before = project.run_sql(
-            f"select id, tenant_id, value from {relation} order by id",
+            f"select id, tenant_id, sequence_id, value "
+            f"from {relation} order by id",
             fetch="all",
         )
-        assert rows_before == [(1, 1, "original")]
-        assert _dbt_helper_relations(project, relation) == []
+        assert rows_before == [(1, 1, 1, "original")]
+        helper_relations_before = _dbt_helper_relations(project, relation)
+        assert helper_relations_before == [
+            (backup_name,),
+            (temp_name,),
+        ]
 
         failure, statements = _run_and_capture_sql(
             model_name,
@@ -1488,16 +1705,29 @@ class TestDorisIncrementalTargetPreflight:
             "alter table" in sql or "delete from" in sql
             for sql in statements
         )
+        assert not any(
+            "drop " in sql and "__dbt_" in sql
+            for sql in statements
+        )
 
         assert project.run_sql(
             f"show create table {relation}",
             fetch="one",
         )[1] == ddl_before
         assert project.run_sql(
-            f"select id, tenant_id, value from {relation} order by id",
+            f"select id, tenant_id, sequence_id, value "
+            f"from {relation} order by id",
             fetch="all",
         ) == rows_before
-        assert _dbt_helper_relations(project, relation) == []
+        assert _dbt_helper_relations(project, relation) == helper_relations_before
+        assert project.run_sql(
+            f"select sentinel from `{relation.schema}`.`{temp_name}`",
+            fetch="all",
+        ) == [(-1,)]
+        assert project.run_sql(
+            f"select sentinel from `{relation.schema}`.`{backup_name}`",
+            fetch="all",
+        ) == [(-2,)]
 
 
 class TestDorisIncrementalGrantPreflight:
@@ -1754,6 +1984,249 @@ class TestDorisIncrementalDynamicPartitionOverwrite:
         assert len(overwrite_statements) == 1
         assert "partition(*)" in overwrite_statements[0].replace(" ", "")
         _assert_no_physical_dbt_staging(statements)
+        assert _dbt_helper_relations(project, relation) == []
+
+
+class TestDorisIncrementalMicrobatch:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_input.sql": MICROBATCH_INPUT_SQL,
+            "incremental_microbatch.sql": INCREMENTAL_MICROBATCH_SQL,
+        }
+
+    def test_microbatch_replaces_exact_and_empty_batches(self, project):
+        model_name = "incremental_microbatch"
+        run_args = ["run"]
+        invocation_time = datetime.combine(
+            MICROBATCH_TODAY,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        second_partition = f"dbt_mb_{MICROBATCH_DATE_2:%Y%m%d}"
+        third_partition = f"dbt_mb_{MICROBATCH_DATE_3:%Y%m%d}"
+
+        with patch_microbatch_end_time(
+            invocation_time.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            results, initial_statements = _run_and_capture_sql(
+                model_name,
+                run_args,
+            )
+        assert len(results) == 2
+
+        initial_overwrites = [
+            statement
+            for statement in initial_statements
+            if "insert overwrite" in statement
+            and model_name in statement
+        ]
+        assert len(initial_overwrites) == 2
+        assert any(
+            f"partition(`{second_partition}`)" in statement.replace(" ", "")
+            for statement in initial_overwrites
+        )
+        assert any(
+            f"partition(`{third_partition}`)" in statement.replace(" ", "")
+            for statement in initial_overwrites
+        )
+        assert not any(
+            "partition(*)" in statement.replace(" ", "")
+            for statement in initial_overwrites
+        )
+        added_partitions = [
+            statement
+            for statement in initial_statements
+            if "alter table" in statement and "add partition" in statement
+        ]
+        assert len(added_partitions) == 2
+        _assert_no_physical_dbt_staging(initial_statements)
+
+        relation = relation_from_name(project.adapter, model_name)
+        input_relation = relation_from_name(project.adapter, "microbatch_input")
+        assert project.run_sql(
+            f"select id, value from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "first"),
+            (2, "second"),
+            (3, "third"),
+        ]
+
+        # Re-running the lookback after deleting all source rows for one batch
+        # must empty that target partition. PARTITION(*) would leave id=3.
+        project.run_sql(f"delete from {input_relation} where id = 3")
+        with patch_microbatch_end_time(
+            invocation_time.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            results, empty_batch_statements = _run_and_capture_sql(
+                model_name,
+                ["run", "--select", model_name],
+            )
+        assert len(results) == 1
+        assert project.run_sql(
+            f"select id, value from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "first"),
+            (2, "second"),
+        ]
+
+        empty_batch_overwrites = [
+            statement
+            for statement in empty_batch_statements
+            if "insert overwrite" in statement
+            and model_name in statement
+        ]
+        assert len(empty_batch_overwrites) == 2
+        assert any(
+            f"partition(`{third_partition}`)" in statement.replace(" ", "")
+            for statement in empty_batch_overwrites
+        )
+        assert not any(
+            "add partition" in statement
+            for statement in empty_batch_statements
+        )
+        assert len(
+            [
+                statement
+                for statement in empty_batch_statements
+                if "create or replace view" in statement
+                and "__dbt_tmp_" in statement
+            ]
+        ) == 2
+        _assert_no_physical_dbt_staging(empty_batch_statements)
+        assert _dbt_helper_relations(project, relation) == []
+
+        # Explicit Core event-time bounds backfill only the requested batch.
+        project.run_sql(
+            f"insert into {input_relation} values "
+            f"(3, '{MICROBATCH_DATE_3.isoformat()} 00:00:00', 'third')"
+        )
+        results, backfill_statements = _run_and_capture_sql(
+            model_name,
+            [
+                "run",
+                "--select",
+                model_name,
+                "--event-time-start",
+                MICROBATCH_DATE_3.isoformat(),
+                "--event-time-end",
+                MICROBATCH_TODAY.isoformat(),
+            ],
+        )
+        assert len(results) == 1
+        backfill_overwrites = [
+            statement
+            for statement in backfill_statements
+            if "insert overwrite" in statement and model_name in statement
+        ]
+        assert len(backfill_overwrites) == 1
+        assert (
+            f"partition(`{third_partition}`)"
+            in backfill_overwrites[0].replace(" ", "")
+        )
+        assert project.run_sql(
+            f"select id, value from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "first"),
+            (2, "second"),
+            (3, "third"),
+        ]
+        _assert_no_physical_dbt_staging(backfill_statements)
+
+        project.run_sql(f"delete from {input_relation} where id = 3")
+
+        # A full refresh uses CTAS for the first batch, then the same exact
+        # partition-overwrite path for every remaining batch. It must not copy
+        # the complete model through an additional physical staging table.
+        with patch_microbatch_end_time(
+            invocation_time.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            results, full_refresh_statements = _run_and_capture_sql(
+                model_name,
+                ["run", "--full-refresh", "--select", model_name],
+            )
+        assert len(results) == 1
+        assert project.run_sql(
+            f"select id, value from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "first"),
+            (2, "second"),
+        ]
+        full_refresh_overwrites = [
+            statement
+            for statement in full_refresh_statements
+            if "insert overwrite" in statement and model_name in statement
+        ]
+        assert len(full_refresh_overwrites) == 2
+        assert len(
+            [
+                statement
+                for statement in full_refresh_statements
+                if "create table" in statement
+                and f"{model_name}__dbt_tmp" in statement
+                and " as " in statement
+            ]
+        ) == 1
+        _assert_no_physical_dbt_staging(full_refresh_overwrites)
+        assert _dbt_helper_relations(project, relation) == []
+
+
+class TestDorisIncrementalMicrobatchDynamicPartitions:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "microbatch_input.sql": MICROBATCH_INPUT_SQL,
+            "incremental_microbatch_dynamic.sql": (
+                INCREMENTAL_MICROBATCH_DYNAMIC_SQL
+            ),
+        }
+
+    def test_dynamic_partitions_are_resolved_without_manual_add(self, project):
+        model_name = "incremental_microbatch_dynamic"
+        invocation_time = datetime.combine(
+            MICROBATCH_TODAY,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+
+        with patch_microbatch_end_time(
+            invocation_time.strftime("%Y-%m-%d %H:%M:%S")
+        ):
+            results, statements = _run_and_capture_sql(model_name, ["run"])
+        assert len(results) == 2
+
+        overwrite_statements = [
+            statement
+            for statement in statements
+            if "insert overwrite" in statement and model_name in statement
+        ]
+        assert len(overwrite_statements) == 2
+        assert any(
+            f"partition(`dyn{MICROBATCH_DATE_2:%Y%m%d}`)"
+            in statement.replace(" ", "")
+            for statement in overwrite_statements
+        )
+        assert any(
+            f"partition(`dyn{MICROBATCH_DATE_3:%Y%m%d}`)"
+            in statement.replace(" ", "")
+            for statement in overwrite_statements
+        )
+        assert not any("add partition" in statement for statement in statements)
+        _assert_no_physical_dbt_staging(statements)
+
+        relation = relation_from_name(project.adapter, model_name)
+        assert project.run_sql(
+            f"select id, value from {relation} order by id",
+            fetch="all",
+        ) == [
+            (1, "first"),
+            (2, "second"),
+            (3, "third"),
+        ]
         assert _dbt_helper_relations(project, relation) == []
 
 
@@ -2053,8 +2526,14 @@ class TestDorisIncrementalCustomStrategy:
             and " as " in statement
         )
         compact_staging_ctas = staging_ctas.replace(" ", "")
-        assert "distributedbyhash(`id`)" in compact_staging_ctas
-        assert 'properties("replication_num"="1")' in compact_staging_ctas
+        assert "distributedbyrandombucketsauto" in compact_staging_ctas
+        assert "distributedbyhash" not in compact_staging_ctas
+        assert "duplicatekey" not in compact_staging_ctas
+        assert (
+            '"enable_duplicate_without_keys_by_default"="true"'
+            in compact_staging_ctas
+        )
+        assert '"replication_num"="1"' in compact_staging_ctas
 
         target_dml = _target_dml_statements(statements)[0]
         assert "dbt_custom_source.`id` >= 0" in target_dml
@@ -2064,9 +2543,12 @@ class TestDorisIncrementalCustomStrategy:
             "incremental_custom_strategy",
         )
         assert project.run_sql(
-            f"select id, value from {relation} order by id",
+            f"select id, measure, value from {relation} order by id",
             fetch="all",
-        ) == [(1, "initial"), (2, "incremental")]
+        ) == [
+            (1, 1.0, "initial"),
+            (2, 2.5, "incremental"),
+        ]
         assert _dbt_helper_relations(project, relation) == []
 
 

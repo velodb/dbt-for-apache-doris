@@ -11,7 +11,8 @@ dbt Labs release.
 
 | Component | Development or test baseline |
 | --- | --- |
-| dbt Core | 1.12.x; final matrix ran on 1.12.0 |
+| dbt Core | 1.12.x; Microbatch requires 1.12.x; the historical release matrix ran on 1.12.0 |
+| Apache Doris | 2.1.5+ expected runtime minimum; exact historical release evidence is listed below and in the Incremental guide |
 | Historical Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the recorded CTAS-snapshot, durable-marker, and pre-model-ordering baseline |
 | Historical mixed-cluster Functional run | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed, but not official-release compatibility evidence |
 | Doris Async MV gate unit tests | Mocked version strings for 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
@@ -143,17 +144,30 @@ The adapter contains Doris implementations for table, view, incremental,
 partition, snapshot, seed, and asynchronous materialized-view workflows.
 Ephemeral models are compiled by dbt Core.
 
+### dbt Core foundation capabilities
+
+The adapter supports enforced model contracts, persisted relation and column
+documentation, source freshness, stored data-test failures, and declarative
+relation grants. Their configuration and Doris-specific behavior are documented
+in [Contracts](docs/foundation/contracts.zh-CN.md),
+[Persist Docs](docs/foundation/persist-docs.zh-CN.md),
+[Source Freshness](docs/foundation/source-freshness.zh-CN.md),
+[Store Failures](docs/foundation/store-failures.zh-CN.md), and
+[Grants](docs/foundation/grants.zh-CN.md).
+
 ### Incremental models
 
-The built-in Doris incremental strategies are `append`, `merge`, and
-`insert_overwrite`. If `incremental_strategy` is omitted, a model with a
-`unique_key` uses `merge`; a model without one uses `append`.
+The built-in Doris incremental strategies are `append`, `merge`,
+`insert_overwrite`, and dbt Core 1.12 `microbatch`. If
+`incremental_strategy` is omitted, a model with a `unique_key` uses `merge`; a
+model without one uses `append`.
 
 | Strategy | Target model | Incremental DML |
 | --- | --- | --- |
 | `append` | Duplicate Key | `INSERT INTO` append |
 | `merge` | MOW or MOR Unique Key | full-row `INSERT INTO` upsert |
 | `insert_overwrite` | writable Doris table | native whole-table or partition `INSERT OVERWRITE` |
+| `microbatch` | Duplicate Key with one exact RANGE partition per `event_time` batch | one named-partition `INSERT OVERWRITE` per Core UTC window |
 
 `merge` describes dbt's result semantics. Native Doris `MERGE INTO` is available
 only on Doris 4.1 and newer, but the current adapter does not depend on it or
@@ -228,7 +242,7 @@ the CTAS path.
 
 This physical snapshot is limited to forward type switching; it does not change
 the logical temporary View and one-final-DML contract for normal `append`,
-`merge`, or `insert_overwrite` runs. SQL-mode-sensitive tests must assert the
+`merge`, `insert_overwrite`, or each `microbatch` run. SQL-mode-sensitive tests must assert the
 rows returned in the current pre-model session and the ordering boundary above;
 they must not infer creation-time SQL mode preservation from the View DDL.
 
@@ -240,7 +254,9 @@ the legacy combination `insert_overwrite + unique_key` is rejected: change the
 strategy to `merge` for upserts, or remove `unique_key` to explicitly opt in to
 native overwrite, which can remove rows absent from the new batch. See the
 [Chinese Incremental user guide](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental.zh-CN.md)
-for configuration and migration details, and the
+for configuration, Microbatch partition semantics, and migration details; the
+[current Incremental test matrix](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-tests.zh-CN.md)
+summarizes what is tested and how, and the
 [Incremental test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md)
 for SQL-count and failure-recovery acceptance criteria.
 

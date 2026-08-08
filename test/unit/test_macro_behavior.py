@@ -25,6 +25,8 @@ suite covers the same ground end to end but needs a cluster, so it cannot run on
 a pull request; these can.
 """
 
+from datetime import datetime, timezone
+
 import pytest
 
 from .macro_harness import (
@@ -255,6 +257,7 @@ class TestSingleStatementDDL:
     def test_incremental_staging_preserves_replication_allocation(self):
         sql = table_runner(
             config={
+                "distributed_by": ["id"],
                 "properties": {
                     "replication_allocation": "tag.location.default: 1",
                 }
@@ -265,11 +268,11 @@ class TestSingleStatementDDL:
             "select 1 as id",
         )
 
-        assert (
-            'properties ("replication_allocation" = '
-            '"tag.location.default: 1")'
-        ) in sql
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert '"replication_allocation" = "tag.location.default: 1"' in sql
         assert '"replication_num"' not in sql
+        assert "distributed by random buckets auto" in sql.lower()
+        assert "distributed by hash" not in sql.lower()
 
     def test_incremental_staging_prefers_top_level_replication_num(self):
         sql = table_runner(
@@ -286,8 +289,28 @@ class TestSingleStatementDDL:
             "select 1 as id",
         )
 
-        assert 'properties ("replication_num" = "1")' in sql
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert '"replication_num" = "1"' in sql
         assert '"replication_allocation"' not in sql
+
+    def test_incremental_staging_is_keyless_for_non_keyable_first_column(self):
+        sql = table_runner(
+            config={
+                "duplicate_key": ["id"],
+                "distributed_by": ["id"],
+                "replication_num": "1",
+            }
+        ).sql(
+            "doris__create_incremental_staging_table",
+            FakeRelation(identifier="target__dbt_tmp"),
+            "select cast(1.5 as double) as measure, 1 as id",
+        )
+
+        assert "distributed by random buckets auto" in sql.lower()
+        assert "distributed by hash" not in sql.lower()
+        assert "duplicate key" not in sql.lower()
+        assert '"enable_duplicate_without_keys_by_default" = "true"' in sql
+        assert sql.count("select cast(1.5 as double) as measure, 1 as id") == 1
 
 
 class TestContractProjection:
@@ -447,6 +470,45 @@ INCREMENTAL_MACROS = (
 )
 
 
+def microbatch_model(
+    batch_id="20260804",
+    start=None,
+    end=None,
+):
+    return {
+        "unique_id": "model.my_project.my_model",
+        "name": "my_model",
+        "batch": {
+            "id": batch_id,
+            "event_time_start": start
+            or datetime(2026, 8, 4, tzinfo=timezone.utc),
+            "event_time_end": end
+            or datetime(2026, 8, 5, tzinfo=timezone.utc),
+        },
+    }
+
+
+def microbatch_config(**updates):
+    values = {
+        "incremental_strategy": "microbatch",
+        "event_time": "event_time",
+        "batch_size": "day",
+        "partition_by": ["event_time"],
+        "partition_type": "RANGE",
+        "properties": {
+            "dynamic_partition.enable": "true",
+            "dynamic_partition.time_unit": "DAY",
+            "dynamic_partition.time_zone": "UTC",
+            "dynamic_partition.prefix": "p",
+            "dynamic_partition.start": "-10",
+            "dynamic_partition.end": "1",
+            "dynamic_partition.create_history_partition": "true",
+        },
+    }
+    values.update(updates)
+    return values
+
+
 def incremental_args(**updates):
     values = {
         "target_relation": FakeRelation(identifier="target"),
@@ -465,18 +527,22 @@ def incremental_args(**updates):
 class TestIncrementalStrategyValidation:
     """The public strategy names map cleanly to Doris table semantics."""
 
-    def runner(self, config):
+    def runner(self, config, model=None):
         return MacroRunner(
             *INCREMENTAL_MACROS,
             context={
                 "adapter": FakeAdapter(),
                 "config": FakeConfig(config),
-                "model": {"unique_id": "model.my_project.my_model", "name": "my_model"},
+                "model": model
+                or {
+                    "unique_id": "model.my_project.my_model",
+                    "name": "my_model",
+                },
             },
         )
 
-    def validate(self, config):
-        return self.runner(config).render(
+    def validate(self, config, model=None):
+        return self.runner(config, model=model).render(
             "dbt_doris_validate_get_incremental_strategy", FakeConfig(config)
         )
 
@@ -518,6 +584,101 @@ class TestIncrementalStrategyValidation:
 
     def test_insert_overwrite_needs_no_unique_key(self):
         assert self.validate({"incremental_strategy": "insert_overwrite"}) == "insert_overwrite"
+
+    def test_microbatch_accepts_aligned_dynamic_range_partition(self):
+        config = microbatch_config()
+
+        assert self.validate(config, microbatch_model()) == "microbatch"
+
+    def test_microbatch_accepts_adapter_managed_static_range_partitions(self):
+        config = microbatch_config(properties={"replication_num": "1"})
+
+        assert self.validate(config, microbatch_model()) == "microbatch"
+
+    @pytest.mark.parametrize(
+        ("updates", "expected"),
+        [
+            ({"event_time": None}, "event_time"),
+            ({"partition_by": None}, "partition_by"),
+            ({"partition_by": ["other_time"]}, "same column"),
+            ({"partition_type": "LIST"}, "range"),
+            (
+                {
+                    "properties": {
+                        "dynamic_partition.enable": "true",
+                        "dynamic_partition.time_unit": "HOUR",
+                        "dynamic_partition.time_zone": "UTC",
+                        "dynamic_partition.prefix": "p",
+                        "dynamic_partition.start": "-10",
+                        "dynamic_partition.end": "1",
+                        "dynamic_partition.create_history_partition": "true",
+                    }
+                },
+                "batch_size",
+            ),
+            (
+                {
+                    "properties": {
+                        "dynamic_partition.enable": "true",
+                        "dynamic_partition.time_unit": "DAY",
+                        "dynamic_partition.time_zone": "Asia/Shanghai",
+                        "dynamic_partition.prefix": "p",
+                        "dynamic_partition.start": "-10",
+                        "dynamic_partition.end": "1",
+                        "dynamic_partition.create_history_partition": "true",
+                    }
+                },
+                "utc",
+            ),
+            (
+                {
+                    "properties": {
+                        "dynamic_partition.enable": "true",
+                        "dynamic_partition.time_unit": "DAY",
+                        "dynamic_partition.time_zone": "UTC",
+                        "dynamic_partition.prefix": "p",
+                        "dynamic_partition.start": "-10",
+                        "dynamic_partition.end": "1",
+                        "dynamic_partition.create_history_partition": "false",
+                    }
+                },
+                "create_history_partition",
+            ),
+            (
+                {
+                    "properties": {
+                        "dynamic_partition.enable": "true",
+                        "dynamic_partition.time_unit": "DAY",
+                        "dynamic_partition.time_zone": "UTC",
+                        "dynamic_partition.start": "-10",
+                        "dynamic_partition.end": "1",
+                        "dynamic_partition.create_history_partition": "true",
+                    }
+                },
+                "dynamic_partition.prefix",
+            ),
+            ({"unique_key": "id"}, "unique_key"),
+            ({"overwrite_partitions": "*"}, "adapter resolves"),
+            ({"partition_by_init": ["PARTITION p1 VALUES LESS THAN (MAXVALUE)"]}, "model.batch"),
+        ],
+    )
+    def test_microbatch_rejects_unsafe_partition_configs(
+        self,
+        updates,
+        expected,
+    ):
+        config = microbatch_config(**updates)
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(config, microbatch_model())
+
+        assert expected in str(excinfo.value).lower()
+
+    def test_microbatch_requires_core_batch_context(self):
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.validate(microbatch_config())
+
+        assert "model.batch" in str(excinfo.value)
 
     def test_insert_overwrite_rejects_legacy_unique_key_combination(self):
         with pytest.raises(CapturedCompilerError) as excinfo:
@@ -572,6 +733,154 @@ class TestIncrementalStrategyValidation:
         assert "__DORIS_SEQUENCE_COL__" in message
         assert "function_column.sequence_col" in message
 
+    def test_existing_merge_target_accepts_matching_visible_sequence_mapping(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+                "properties": {
+                    "function_column.sequence_col": "Sequence_ID",
+                },
+            }
+        )
+
+        create_table = '''CREATE TABLE `target` (`id` int, `sequence_id` bigint)
+            UNIQUE KEY(`id`)
+            PROPERTIES (
+            "FUNCTION_COLUMN.SEQUENCE_COL" = "sequence_id",
+            "replication_num" = "1"
+            )'''.replace("\n", "\r\n")
+
+        runner.render(
+            "doris__validate_incremental_sequence_mapping",
+            create_table,
+            FakeRelation(identifier="target"),
+        )
+
+    def test_sequence_property_text_in_comment_is_not_physical_mapping(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+            }
+        )
+
+        runner.render(
+            "doris__validate_incremental_sequence_mapping",
+            '''CREATE TABLE target (`id` int COMMENT
+            '"function_column.sequence_type" = "bigint"')
+            UNIQUE KEY(`id`)
+            PROPERTIES (
+            "replication_num" = "1"
+            )''',
+            FakeRelation(identifier="target"),
+        )
+
+    def test_keyless_duplicate_property_identifies_append_target(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "append",
+            }
+        )
+
+        table_model = runner.render(
+            "doris__table_model_from_create_table",
+            '''CREATE TABLE target (`measure` double)
+            DISTRIBUTED BY RANDOM BUCKETS AUTO
+            PROPERTIES (
+            "enable_duplicate_without_keys_by_default" = "true",
+            "replication_num" = "1"
+            )''',
+        )
+
+        assert table_model == "duplicate"
+
+    @pytest.mark.parametrize("spoofed_key", ["UNIQUE KEY(", "AGGREGATE KEY("])
+    def test_table_model_ignores_key_clause_text_in_comments(self, spoofed_key):
+        table_model = self.runner({}).render(
+            "doris__table_model_from_create_table",
+            f'''CREATE TABLE `target` (`id` int COMMENT "example {spoofed_key}")
+            DUPLICATE KEY(`id`)
+            COMMENT "documented {spoofed_key}"
+            DISTRIBUTED BY HASH(`id`) BUCKETS 1
+            PROPERTIES (
+            "replication_num" = "1"
+            )''',
+        )
+
+        assert table_model == "duplicate"
+
+    @pytest.mark.parametrize(
+        ("properties", "physical_property", "expected"),
+        [
+            (
+                {},
+                '"function_column.sequence_col" = "sequence_id"',
+                "does not configure 'function_column.sequence_col'",
+            ),
+            (
+                {"function_column.sequence_col": "sequence_id"},
+                '"function_column.sequence_col" = "tenant_id"',
+                "sequence mapping column 'tenant_id'",
+            ),
+            (
+                {"function_column.sequence_col": "sequence_id"},
+                '"replication_num" = "1"',
+                "no visible sequence mapping",
+            ),
+            (
+                {},
+                '"function_column.sequence_type" = "bigint"',
+                "__doris_sequence_col__",
+            ),
+        ],
+    )
+    def test_existing_merge_target_rejects_physical_sequence_mismatch(
+        self,
+        properties,
+        physical_property,
+        expected,
+    ):
+        runner = self.runner(
+            {
+                "incremental_strategy": "merge",
+                "unique_key": "id",
+                "properties": properties,
+            }
+        )
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            runner.render(
+                "doris__validate_incremental_sequence_mapping",
+                "CREATE TABLE target UNIQUE KEY(id) PROPERTIES (\n"
+                f"{physical_property}\n)",
+                FakeRelation(identifier="target"),
+            )
+
+        assert expected in str(excinfo.value).lower()
+
+    def test_insert_overwrite_rejects_hidden_physical_sequence(self):
+        runner = self.runner(
+            {
+                "incremental_strategy": "insert_overwrite",
+            }
+        )
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            runner.render(
+                "doris__validate_incremental_sequence_mapping",
+                "CREATE TABLE target UNIQUE KEY(id) PROPERTIES (\n"
+                '"function_column.sequence_type" = "bigint"\n)',
+                FakeRelation(identifier="target"),
+                "insert_overwrite",
+            )
+
+        message = str(excinfo.value).lower()
+        assert "incremental strategy 'insert_overwrite'" in message
+        assert "__doris_sequence_col__" in message
+        assert "without hidden sequence state" in message
+        assert "strategy 'merge'" in message
+
     @pytest.mark.parametrize(
         "config",
         [
@@ -602,7 +911,7 @@ class TestIncrementalStrategyValidation:
 
     @pytest.mark.parametrize(
         "strategy",
-        ["append", "merge", "insert_overwrite"],
+        ["append", "merge", "insert_overwrite", "microbatch"],
     )
     def test_predicates_are_rejected_for_builtins(self, strategy):
         config = {
@@ -611,8 +920,13 @@ class TestIncrementalStrategyValidation:
         }
         if strategy == "merge":
             config["unique_key"] = "id"
+        if strategy == "microbatch":
+            config.update(microbatch_config())
         with pytest.raises(CapturedCompilerError) as excinfo:
-            self.validate(config)
+            self.validate(
+                config,
+                microbatch_model() if strategy == "microbatch" else None,
+            )
         assert "native MERGE INTO" in str(excinfo.value)
 
     @pytest.mark.parametrize("option", ["merge_update_columns", "merge_exclude_columns"])
@@ -667,13 +981,14 @@ class TestIncrementalStrategyValidation:
 
 
 class TestIncrementalStrategySql:
-    def runner(self, config=None):
+    def runner(self, config=None, model=None):
         return MacroRunner(
             *INCREMENTAL_MACROS,
             context={
                 "adapter": FakeAdapter(),
                 "config": FakeConfig(config),
-                "model": {
+                "model": model
+                or {
                     "unique_id": "model.my_project.my_model",
                     "name": "my_model",
                 },
@@ -751,6 +1066,253 @@ class TestIncrementalStrategySql:
         assert statement_count(sql) == 1
         assert expected in sql
         assert "__dbt_tmp" not in sql
+
+    def test_microbatch_overwrites_the_resolved_static_partition(self):
+        sql = self.runner(
+            microbatch_config(),
+            model=microbatch_model(),
+        ).sql(
+            "doris__get_incremental_microbatch_sql",
+            incremental_args(
+                unique_key=None,
+                microbatch_partition="actual_partition_name",
+            ),
+        )
+
+        assert statement_count(sql) == 1
+        assert "partition(`actual_partition_name`)" in sql
+        assert "partition(*)" not in sql
+        assert "__dbt_tmp" not in sql
+
+    @pytest.mark.parametrize(
+        ("batch_size", "batch_id", "start", "end", "partition_name"),
+        [
+            (
+                "hour",
+                "20260804T12",
+                datetime(2026, 8, 4, 12, tzinfo=timezone.utc),
+                datetime(2026, 8, 4, 13, tzinfo=timezone.utc),
+                "dbt_mb_2026080412",
+            ),
+            (
+                "day",
+                "20260804",
+                datetime(2026, 8, 4, tzinfo=timezone.utc),
+                datetime(2026, 8, 5, tzinfo=timezone.utc),
+                "dbt_mb_20260804",
+            ),
+            (
+                "month",
+                "202608",
+                datetime(2026, 8, 1, tzinfo=timezone.utc),
+                datetime(2026, 9, 1, tzinfo=timezone.utc),
+                "dbt_mb_202608",
+            ),
+            (
+                "year",
+                "2026",
+                datetime(2026, 1, 1, tzinfo=timezone.utc),
+                datetime(2027, 1, 1, tzinfo=timezone.utc),
+                "dbt_mb_2026",
+            ),
+        ],
+    )
+    def test_microbatch_initial_partition_uses_the_core_batch_range(
+        self,
+        batch_size,
+        batch_id,
+        start,
+        end,
+        partition_name,
+    ):
+        config = microbatch_config(
+            batch_size=batch_size,
+            properties={"replication_num": "1"},
+        )
+        model = microbatch_model(batch_id, start, end)
+
+        assert (
+            self.runner(config, model=model).render(
+                "dbt_doris_validate_get_incremental_strategy",
+                FakeConfig(config),
+            )
+            == "microbatch"
+        )
+        clause = self.runner(
+            config,
+            model=model,
+        ).render("doris__microbatch_partition_by_clause")
+
+        assert "partition by range (`event_time`)" in clause.lower()
+        assert f"`{partition_name}`" in clause
+        assert start.strftime("%Y-%m-%d %H:%M:%S") in clause
+        assert end.strftime("%Y-%m-%d %H:%M:%S") in clause
+
+    @pytest.mark.parametrize(
+        ("batch_id", "start", "end", "description"),
+        [
+            (
+                "20260804",
+                datetime(2026, 8, 4, tzinfo=timezone.utc),
+                datetime(2026, 8, 5, tzinfo=timezone.utc),
+                "[('2026-08-04'), ('2026-08-05'))",
+            ),
+            (
+                "20260804T12",
+                datetime(2026, 8, 4, 12, tzinfo=timezone.utc),
+                datetime(2026, 8, 4, 13, tzinfo=timezone.utc),
+                (
+                    "[('2026-08-04 12:00:00'), "
+                    "('2026-08-04 13:00:00'))"
+                ),
+            ),
+        ],
+    )
+    def test_microbatch_resolves_any_exact_range_partition_name(
+        self,
+        batch_id,
+        start,
+        end,
+        description,
+    ):
+        rows = [
+            [
+                "arbitrary_physical_name",
+                "RANGE",
+                "event_time",
+                description,
+            ]
+        ]
+        model = microbatch_model(batch_id, start, end)
+
+        partition = self.runner(
+            microbatch_config(),
+            model=model,
+        ).render(
+            "doris__microbatch_partition_from_rows",
+            rows,
+            FakeRelation(identifier="target"),
+        )
+
+        assert partition == "arbitrary_physical_name"
+
+    def test_microbatch_rejects_a_coarser_physical_partition(self):
+        rows = [
+            [
+                "p202608",
+                "RANGE",
+                "event_time",
+                "[('2026-08-01'), ('2026-09-01'))",
+            ]
+        ]
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.runner(
+                microbatch_config(),
+                model=microbatch_model(),
+            ).render(
+                "doris__microbatch_partition_from_rows",
+                rows,
+                FakeRelation(identifier="target"),
+            )
+
+        message = str(excinfo.value).lower()
+        assert "exact range partition" in message
+        assert "2026-08-04 00:00:00" in message
+
+    def test_static_microbatch_can_create_a_missing_non_overlapping_partition(self):
+        rows = [
+            [
+                "old_batch",
+                "RANGE",
+                "event_time",
+                "[('2026-08-03'), ('2026-08-04'))",
+            ]
+        ]
+
+        partition = self.runner(
+            microbatch_config(properties={"replication_num": "1"}),
+            model=microbatch_model(),
+        ).render(
+            "doris__microbatch_partition_from_rows",
+            rows,
+            FakeRelation(identifier="target"),
+            True,
+        )
+
+        assert partition is None
+
+    def test_dynamic_microbatch_rejects_a_missing_exact_partition(self):
+        rows = [
+            [
+                "old_batch",
+                "RANGE",
+                "event_time",
+                "[('2026-08-03'), ('2026-08-04'))",
+            ]
+        ]
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.runner(
+                microbatch_config(),
+                model=microbatch_model(),
+            ).render(
+                "doris__microbatch_partition_from_rows",
+                rows,
+                FakeRelation(identifier="target"),
+            )
+
+        assert "dynamic partition is enabled" in str(excinfo.value).lower()
+        assert "no exact range partition" in str(excinfo.value).lower()
+
+    def test_microbatch_rejects_static_dynamic_target_drift(self):
+        create_table = """CREATE TABLE target DUPLICATE KEY(id)
+        PARTITION BY RANGE(event_time)
+        (PARTITION p1 VALUES [('2026-08-04'), ('2026-08-05')))
+        PROPERTIES (
+        "dynamic_partition.enable" = "true",
+        "dynamic_partition.time_unit" = "DAY",
+        "dynamic_partition.time_zone" = "UTC",
+        "dynamic_partition.prefix" = "p",
+        "dynamic_partition.start" = "-10",
+        "dynamic_partition.end" = "1",
+        "dynamic_partition.create_history_partition" = "true"
+        )"""
+
+        with pytest.raises(CapturedCompilerError) as excinfo:
+            self.runner(
+                microbatch_config(properties={"replication_num": "1"}),
+                model=microbatch_model(),
+            ).render(
+                "doris__validate_microbatch_target_properties",
+                create_table,
+                FakeRelation(identifier="target"),
+            )
+
+        assert "static partitions" in str(excinfo.value)
+
+    def test_microbatch_accepts_matching_physical_dynamic_properties(self):
+        create_table = """CREATE TABLE target DUPLICATE KEY(id)
+        PARTITION BY RANGE(event_time)
+        (PARTITION p1 VALUES [('2026-08-04'), ('2026-08-05')))
+        PROPERTIES (
+        "dynamic_partition.enable" = "true",
+        "dynamic_partition.time_unit" = "DAY",
+        "dynamic_partition.time_zone" = "UTC",
+        "dynamic_partition.prefix" = "p",
+        "dynamic_partition.start" = "-10",
+        "dynamic_partition.end" = "1",
+        "dynamic_partition.create_history_partition" = "true"
+        )"""
+
+        self.runner(
+            microbatch_config(),
+            model=microbatch_model(),
+        ).render(
+            "doris__validate_microbatch_target_properties",
+            create_table,
+            FakeRelation(identifier="target"),
+        )
 
     @pytest.mark.parametrize(
         "macro",

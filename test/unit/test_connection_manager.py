@@ -24,7 +24,10 @@ import inspect
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import mysql.connector
+import pytest
 from dbt.adapters.sql import SQLConnectionManager
+from dbt.exceptions import DbtRuntimeError
 
 from dbt.adapters.doris.connections import DorisConnectionManager
 
@@ -104,6 +107,26 @@ def test_add_query_drains_every_extra_non_select_result(monkeypatch):
     manager.add_query("alter table example add column value int")
 
     assert cursor.nextset.call_count == 3
+
+
+def test_add_query_propagates_an_error_from_a_later_result(monkeypatch):
+    cursor = SimpleNamespace(
+        with_rows=False,
+        nextset=Mock(
+            side_effect=mysql.connector.DatabaseError(
+                "later statement failed"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        SQLConnectionManager,
+        "add_query",
+        lambda self, *args, **kwargs: (object(), cursor),
+    )
+    manager = object.__new__(DorisConnectionManager)
+
+    with pytest.raises(DbtRuntimeError, match="later statement failed"):
+        manager.add_query("set ok = true; set invalid = true")
 
 
 def test_add_query_preserves_select_result(monkeypatch):

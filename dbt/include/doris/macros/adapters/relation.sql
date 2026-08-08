@@ -22,6 +22,9 @@
 {%- endmacro %}
 
 {% macro doris__partition_by() -%}
+  {% if config.get('incremental_strategy', none) == 'microbatch' %}
+    {{ return(doris__microbatch_partition_by_clause()) }}
+  {% endif %}
   {% set cols = config.get('partition_by', validator=validation.any[list, basestring]) %}
   {% set partition_type = config.get('partition_type', 'RANGE') %}
   {% if cols is not none %}

@@ -20,6 +20,12 @@
   {% set existing_relation = load_cached_relation(this) %}
   {% set temp_relation = make_temp_relation(target_relation) %}
   {% set intermediate_relation = make_intermediate_relation(target_relation) %}
+  {% set target_docs_source_relation = (
+      doris__documented_table_source_relation(target_relation)
+  ) %}
+  {% set intermediate_docs_source_relation = (
+      doris__documented_table_source_relation(intermediate_relation)
+  ) %}
   {% set recovered_from_backup = false %}
   {# A failed type replacement can leave the old object at dbt's backup name
      while the canonical target is absent. Keep that durable recovery marker
@@ -70,10 +76,30 @@
   ) %}
   {% set overwrite_partitions = config.get('overwrite_partitions', none) %}
   {% set grant_config = config.get('grants') %}
+  {% set microbatch_partition = none %}
+
+  {# Reject an incompatible target before hooks, helper cleanup, staging, DDL,
+     or DML so a failed preflight is completely side-effect free. #}
+  {% if existing_relation is not none and not full_refresh_mode %}
+      {% set target_validation = doris__validate_incremental_target(
+          effective_strategy,
+          target_relation,
+          unique_key
+      ) %}
+      {% if effective_strategy == 'microbatch' %}
+          {% set microbatch_partition = target_validation %}
+      {% endif %}
+  {% endif %}
 
   {% set preexisting_temp_relation = load_cached_relation(temp_relation) %}
   {% set preexisting_intermediate_relation = load_cached_relation(
       intermediate_relation
+  ) %}
+  {% set preexisting_target_docs_source_relation = load_cached_relation(
+      target_docs_source_relation
+  ) %}
+  {% set preexisting_intermediate_docs_source_relation = load_cached_relation(
+      intermediate_docs_source_relation
   ) %}
   {% set preexisting_backup_relation = (
       none
@@ -82,15 +108,9 @@
   ) %}
   {{ drop_relation_if_exists(preexisting_temp_relation) }}
   {{ drop_relation_if_exists(preexisting_intermediate_relation) }}
+  {{ drop_relation_if_exists(preexisting_target_docs_source_relation) }}
+  {{ drop_relation_if_exists(preexisting_intermediate_docs_source_relation) }}
   {{ drop_relation_if_exists(preexisting_backup_relation) }}
-
-  {% if existing_relation is not none and not full_refresh_mode %}
-      {% do doris__validate_incremental_target(
-          effective_strategy,
-          target_relation,
-          unique_key
-      ) %}
-  {% endif %}
 
   {# Snapshot an active View before this model's hooks or sql_header can alter
      the session used to evaluate it. Keep the View online until the physical
@@ -140,10 +160,12 @@
       {% if config.persist_column_docs() %}
           {% do doris__create_incremental_documented_table(
               effective_strategy,
-              target_relation,
+              intermediate_relation,
               source_sql,
               source_columns
           ) %}
+          {% set relation_for_indexes = intermediate_relation %}
+          {% set need_swap = true %}
       {% else %}
           {% set build_sql = doris__get_incremental_create_table_as_sql(
               effective_strategy,
@@ -151,8 +173,8 @@
               source_sql,
               source_columns
           ) %}
+          {% set relation_for_indexes = target_relation %}
       {% endif %}
-      {% set relation_for_indexes = target_relation %}
 
   {% elif full_refresh_mode %}
       {% if config.persist_column_docs() %}
@@ -182,7 +204,9 @@
          Ordinary built-ins use a logical metadata view, not a physical staging
          table, and finish with one DML statement. #}
       {% set needs_physical_staging = (
-          effective_strategy not in ['append', 'merge', 'insert_overwrite']
+          effective_strategy not in [
+              'append', 'merge', 'insert_overwrite', 'microbatch'
+          ]
           or on_schema_change != 'ignore'
       ) %}
 
@@ -285,6 +309,22 @@
           {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
       {% endif %}
 
+      {# Static Microbatch tables grow one empty exact RANGE partition at a
+         time. Defer this metadata-only DDL until schema validation and schema
+         changes have succeeded. Dynamic Partition tables must pre-create the
+         batch and fail in the read-only preflight when retention omits it. #}
+      {% if (
+          effective_strategy == 'microbatch'
+          and microbatch_partition is none
+      ) %}
+          {% do run_query(
+              doris__add_microbatch_partition_sql(target_relation)
+          ) %}
+          {% set microbatch_partition = (
+              doris__microbatch_generated_partition_name()
+          ) %}
+      {% endif %}
+
       {% set strategy_arg_dict = {
           'target_relation': target_relation,
           'temp_relation': temp_relation,
@@ -293,7 +333,8 @@
           'incremental_predicates': incremental_predicates,
           'source_sql': source_sql,
           'temp_relation_exists': temp_relation_exists,
-          'overwrite_partitions': overwrite_partitions
+          'overwrite_partitions': overwrite_partitions,
+          'microbatch_partition': microbatch_partition
       } %}
       {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
   {% endif %}
@@ -309,7 +350,14 @@
   {% endif %}
 
   {% if need_swap %}
-      {% if existing_relation.type == 'table' %}
+      {% if existing_relation is none %}
+          {# Persist Docs builds the complete initial relation privately. Do not
+             publish a canonical table until its data copy and indexes succeed. #}
+          {% do adapter.rename_relation(
+              intermediate_relation,
+              target_relation
+          ) %}
+      {% elif existing_relation.type == 'table' %}
           {# swap=true leaves the old target online under intermediate_relation
              until all post-processing succeeds and cleanup runs. #}
           {% do exchange_relation(
@@ -484,6 +532,10 @@
         ) %}
     {% endif %}
 
+    {% if effective_strategy == 'microbatch' %}
+        {% do doris__validate_microbatch_config(unique_key) %}
+    {% endif %}
+
     {% if effective_strategy == 'insert_overwrite' and normalized_unique_key %}
         {% set message -%}
 Incremental strategy 'insert_overwrite' cannot be combined with 'unique_key'
@@ -593,7 +645,8 @@ Config 'overwrite_partitions' is only valid with incremental strategy
     {% if incremental_predicates and effective_strategy in [
         'append',
         'merge',
-        'insert_overwrite'
+        'insert_overwrite',
+        'microbatch'
     ] %}
         {% set message -%}
 Config 'incremental_predicates' is not supported by Doris strategy

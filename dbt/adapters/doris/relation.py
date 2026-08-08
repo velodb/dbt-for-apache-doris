@@ -19,8 +19,9 @@
 # under the License.
 
 from dataclasses import dataclass, field
+from datetime import timezone
 
-from dbt.adapters.base.relation import BaseRelation, Policy
+from dbt.adapters.base.relation import BaseRelation, EventTimeFilter, Policy
 from dbt.exceptions import DbtRuntimeError
 
 
@@ -61,3 +62,23 @@ class DorisRelation(BaseRelation):
                 "Got a Doris relation with schema and database set to include, but only one can be set"
             )
         return super().render()
+
+    @staticmethod
+    def _format_event_time_boundary(boundary):
+        """Render dbt's UTC boundary for Doris's timezone-naive DATETIME."""
+        if boundary.tzinfo is not None:
+            boundary = boundary.astimezone(timezone.utc).replace(tzinfo=None)
+        return boundary.strftime("%Y-%m-%d %H:%M:%S.%f").rstrip("0").rstrip(".")
+
+    def _render_event_time_filtered(
+        self,
+        event_time_filter: EventTimeFilter,
+    ) -> str:
+        filters = []
+        if event_time_filter.start:
+            start = self._format_event_time_boundary(event_time_filter.start)
+            filters.append(f"{event_time_filter.field_name} >= '{start}'")
+        if event_time_filter.end:
+            end = self._format_event_time_boundary(event_time_filter.end)
+            filters.append(f"{event_time_filter.field_name} < '{end}'")
+        return " and ".join(filters)

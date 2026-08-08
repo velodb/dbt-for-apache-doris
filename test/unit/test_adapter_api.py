@@ -22,9 +22,9 @@
 
 import inspect
 
-from dbt_common.clients.agate_helper import table_from_rows
-
+from dbt.adapters.capability import Capability
 from dbt.adapters.doris.impl import DorisAdapter
+from dbt_common.clients.agate_helper import table_from_rows
 
 
 def test_class_level_adapter_methods_remain_classmethods():
@@ -43,7 +43,12 @@ def test_incremental_strategy_allowlist_excludes_delete_insert():
         "append",
         "merge",
         "insert_overwrite",
+        "microbatch",
     ]
+
+
+def test_microbatch_batches_remain_sequential():
+    assert not DorisAdapter.supports(Capability.MicrobatchConcurrency)
 
 
 def test_quoted_contract_column_renders_without_an_adapter_instance():

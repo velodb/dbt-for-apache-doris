@@ -165,7 +165,7 @@ class DorisAdapter(SQLAdapter):
 
     def valid_incremental_strategies(self):
         """Return the built-in incremental strategies implemented by dbt-doris."""
-        return ["append", "merge", "insert_overwrite"]
+        return ["append", "merge", "insert_overwrite", "microbatch"]
 
     def rename_relation(self, from_relation, to_relation):
         """Reject View renames before dbt mutates its relation cache.
@@ -235,10 +235,10 @@ class DorisAdapter(SQLAdapter):
 
     @available
     def wait_for_schema_change(
-            self,
-            relation: BaseRelation,
-            previous_job_id=None,
-            timeout_seconds: int = 300,
+        self,
+        relation: BaseRelation,
+        previous_job_id=None,
+        timeout_seconds: int = 300,
     ):
         """Wait for the column-alter job started by the preceding DDL."""
         deadline = time.monotonic() + timeout_seconds
