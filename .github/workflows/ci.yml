@@ -54,3 +54,27 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+
+  ci-success:
+    name: CI Success
+    # Stable aggregate gate. This is the only job that branch protection needs to
+    # require, so the matrix above can change without updating the protection rule.
+    # `always()` is required: without it a failed dependency would skip this job,
+    # and branch protection treats a skipped check as passing.
+    if: always()
+    needs:
+      - lint-and-unit
+      - package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all jobs succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          failed=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success") | "\(.key)=\(.value.result)"')
+          if [ -n "$failed" ]; then
+            echo "::error::upstream jobs did not succeed: $(echo "$failed" | tr '\n' ' ')"
+            exit 1
+          fi
+          echo "All upstream jobs succeeded."
