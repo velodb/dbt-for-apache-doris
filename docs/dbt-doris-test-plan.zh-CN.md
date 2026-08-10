@@ -262,7 +262,7 @@ python -m pytest -q \
 - 当前 Async MV 直接相关清单为 **22 个 Functional Item + 124 个 Unit/Adapter
   Item**。两组都已在 Doris 4.1.3 对应基线上通过，精确命令、日志、清理结果和
   历史五版本边界见 MV 专项测试文档；
-- 合入前分支提交 `79ad341eb5f48f4c8697d66c5a0281f17dae02bd` 与当前 main
+- 合入前分支提交 `79ad341eb5f48f4c8697d66c5a0281f17dae02bd` 与当时的源仓 main
   具有相同 Git Tree；该内容的完整 Unit Suite 为 `314 passed`，Doris 4.1.3
   完整 Functional Suite 为 `142 passed`。执行时工作树另有无关的未提交文档差异，
   因此该结果作为相同运行时代码的回归证据，不标记为 clean release run；

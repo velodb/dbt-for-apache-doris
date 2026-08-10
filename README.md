@@ -1,8 +1,10 @@
-# dbt-doris-adapter
+# dbt-for-apache-doris
 
-An independent, community-maintained dbt adapter for Apache Doris.
+A dbt adapter for VeloDB and Apache Doris.
 
-This repository is derived from the
+This repository preserves the standalone development history migrated from
+[`xylaaaaa/dbt-doris-adapter`](https://github.com/xylaaaaa/dbt-doris-adapter)
+and is derived from the
 [`extension/dbt-doris`](https://github.com/apache/doris/tree/master/extension/dbt-doris)
 component of Apache Doris. It is not an official Apache Software Foundation or
 dbt Labs release.
@@ -18,6 +20,10 @@ dbt Labs release.
 | Doris Async MV gate unit tests | Mocked version strings for 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
 | Python | 3.10 or newer; final matrix ran on 3.12.13 |
 | Database protocol | Doris MySQL protocol |
+
+The recorded database E2E evidence below covers Apache Doris release
+artifacts. VeloDB-specific release compatibility evidence has not yet been
+recorded in this repository.
 
 The historical release-candidate E2E matrix is deliberately pinned to exact
 public artifacts:
@@ -108,8 +114,8 @@ The Python distribution remains named `dbt-doris`, and the adapter type used in
 ## Install from source
 
 ```shell
-git clone https://github.com/xylaaaaa/dbt-doris-adapter.git
-cd dbt-doris-adapter
+git clone https://github.com/velodb/dbt-for-apache-doris.git
+cd dbt-for-apache-doris
 python -m pip install .
 ```
 
@@ -253,11 +259,11 @@ like an upsert. To prevent a silent change to destructive overwrite semantics,
 the legacy combination `insert_overwrite + unique_key` is rejected: change the
 strategy to `merge` for upserts, or remove `unique_key` to explicitly opt in to
 native overwrite, which can remove rows absent from the new batch. See the
-[Chinese Incremental user guide](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental.zh-CN.md)
+[Chinese Incremental user guide](docs/incremental.zh-CN.md)
 for configuration, Microbatch partition semantics, and migration details; the
-[current Incremental test matrix](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-tests.zh-CN.md)
+[current Incremental test matrix](docs/incremental-tests.zh-CN.md)
 summarizes what is tested and how, and the
-[Incremental test plan](https://github.com/xylaaaaa/dbt-doris-adapter/blob/main/docs/incremental-test-plan.zh-CN.md)
+[Incremental test plan](docs/incremental-test-plan.zh-CN.md)
 for SQL-count and failure-recovery acceptance criteria.
 
 ### Asynchronous materialized views

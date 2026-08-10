@@ -14,15 +14,16 @@ dbt-doris 内置支持四种 Incremental 策略：`append`、`merge`、
 `on_schema_change='ignore'` 时，每个普通增量批次都只执行一条最终 DML，
 不会先把同一批数据写入物理临时表。
 
-## 历史源候选与当前 PR Head
+## 历史源候选与源仓 PR 2 Head
 
 以下五个 Doris 官方发行版本已经在同一份干净源实现候选上完成真实集群验证。
-当前合并候选还包含主干后续加入的 Contracts、Persist Docs、Source Freshness、
-Store Failures、Grants 和 Async MV 能力，以及 PR #2 后续加入的 Microbatch；
-正式发布前仍应在合并后的 PR Head 上重跑下表矩阵，不能把源提交日志当作新提交
+源仓当时的合并候选还包含主干后续加入的 Contracts、Persist Docs、Source Freshness、
+Store Failures、Grants 和 Async MV 能力，以及
+[源仓 PR 2](https://github.com/xylaaaaa/dbt-doris-adapter/pull/2) 后续加入的 Microbatch；
+正式发布前仍应在迁入实现上重跑下表矩阵，不能把源提交日志当作新提交
 产生的日志：
 
-| Doris | FE/BE 完整 Version | 历史完整 Functional | 历史聚焦 Incremental | 当前 PR Head |
+| Doris | FE/BE 完整 Version | 历史完整 Functional | 历史聚焦 Incremental | 源仓 PR 2 Head |
 | --- | --- | --- | --- | --- |
 | 2.1.11 | `doris-2.1.11-rc01-97b77e6cda` | 98 passed / 106 warnings / 290.51s | 36 passed / 27 warnings / 45.20s | **43/43 passed** |
 | 3.0.8 | `doris-3.0.8-rc01-09b0cc49a6` | 98 passed / 106 warnings / 143.87s | 36 passed / 27 warnings / 52.49s | **43/43 passed** |
@@ -37,7 +38,7 @@ Store Failures、Grants 和 Async MV 能力，以及 PR #2 后续加入的 Micro
 清理。每个版本的 FE/BE
 完整 Version 一致且 `Alive=true`，测试数据库和 Helper Relation 残留均为 0。
 
-当前合并后的 PR Head 已通过 Incremental Functional `43/43`、聚焦 Unit/Adapter
+源仓合并前的最终 PR 2 Head 已通过 Incremental Functional `43/43`、聚焦 Unit/Adapter
 `116/116`、Shared Functional `12/12` 和完整 Unit `355/355`。完整 Adapter
 Functional 为 `153/153 passed`（207 warnings，163.14s），其中 Persist Docs 为
 `14/14 passed`。Lint、Build、Twine Check 通过，4.1.3 的测试 Schema 与 Helper

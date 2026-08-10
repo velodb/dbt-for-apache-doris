@@ -2,6 +2,9 @@
 
 本文只回答三个问题：测试矩阵是什么、测试了哪些功能、测试怎么执行。
 
+> 迁移说明：下文的 PR Head 结果来自迁移前的
+> [源仓 PR 2](https://github.com/xylaaaaa/dbt-doris-adapter/pull/2)，不指本仓库的迁移 PR。
+
 ## 1. 测试矩阵
 
 ### 1.1 当前测试数量
@@ -21,14 +24,14 @@
 | **直接 Incremental 合计** |  | **43 Functional + 116 Unit/Adapter** | **159** |
 | **含共享回归合计** |  | **直接 Incremental + 12 Shared Functional** | **171** |
 
-当前代码的 116 项聚焦 Unit/Adapter 为 `116/116 passed`，完整 Unit 为
+源仓 PR 2 Head 的 116 项聚焦 Unit/Adapter 为 `116/116 passed`，完整 Unit 为
 `355/355 passed`。完整 Adapter Functional 为 `153/153 passed`（207 warnings，
 163.14s），其中 Persist Docs 为 `14/14 passed`。Persist Docs 和完整 Adapter
 套件是更广的覆盖，不重复计入 159/171 合计。
 
 ### 1.2 Doris 版本矩阵
 
-| Doris | 当前 PR Head 的 43 项 Incremental Functional | FE/BE Build |
+| Doris | 源仓 PR 2 Head 的 43 项 Incremental Functional | FE/BE Build |
 | --- | ---: | --- |
 | 2.1.11 | **43/43 passed** | `doris-2.1.11-rc01-97b77e6cda` |
 | 3.0.8 | **43/43 passed** | `doris-3.0.8-rc01-09b0cc49a6` |
@@ -36,8 +39,8 @@
 | 4.0.7 | **43/43 passed** | `doris-4.0.7-rc02-35854e7e92a` |
 | 4.1.3 | **43/43 passed** | `doris-4.1.3-rc02-7126cf65d96` |
 
-五个精确版本均已完成当前 PR Head 的 43 项运行时验证，Version Gate、测试
-Schema/Helper 清理均通过；历史 36 项结果不作为当前 43 项套件的通过证据。
+五个精确版本均已完成源仓 PR 2 Head 的 43 项运行时验证，Version Gate、测试
+Schema/Helper 清理均通过；历史 36 项结果不作为这 43 项套件的通过证据。
 
 ## 2. Functional 测试了什么
 
@@ -173,7 +176,7 @@ Microbatch Functional 当前验证 day 粒度的静态和 Dynamic Partition 多�
 hour、month、year 的 Batch ID 和边界由 Unit 覆盖。Adapter 明确不声明 Microbatch
 并发能力，所有批次顺序执行。
 
-当前代码的 Incremental Functional `43/43`、聚焦 Unit/Adapter `116/116` 和
+源仓 PR 2 Head 的 Incremental Functional `43/43`、聚焦 Unit/Adapter `116/116` 和
 Shared Functional `12/12` 均通过；直接合计 159 项，含共享回归合计 171 项。
 Persist Docs 为 `14/14`，完整 Unit 为 `355/355`，完整 Adapter Functional 为
 `153/153`（207 warnings，163.14s）。Lint、Build 和 Twine Check 均通过；

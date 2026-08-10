@@ -1,5 +1,9 @@
 # dbt-doris Incremental 测试方案
 
+> 迁移说明：本文中的“源仓 PR 2”指
+> [`xylaaaaa/dbt-doris-adapter` PR 2](https://github.com/xylaaaaa/dbt-doris-adapter/pull/2)。
+> 文中的合并候选和 PR Head 均为迁移前源仓的历史验证口径，不指本仓库的迁移 PR。
+
 ## 1. 目标
 
 本方案验证 dbt-doris 的 Incremental 行为与 Doris 写入语义一致，重点回答：
@@ -42,19 +46,19 @@ Doris 在 `INSERT OVERWRITE` 内部创建临时分区、写 Rowset 或发布版�
 
 | Doris 版本 | 发布定位 | FE/BE 完整 Version | 当前状态 |
 | --- | --- | --- | --- |
-| 2.1.11 | 2.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-2.1.11-rc01-97b77e6cda` | source passed / current Head **43/43 passed** |
-| 3.0.8 | 3.0 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.0.8-rc01-09b0cc49a6` | source passed / current Head **43/43 passed** |
-| 3.1.4 | 3.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.1.4-rc02-7f5ba43de6` | source passed / current Head **43/43 passed** |
-| 4.0.7 | **Stable** | `doris-4.0.7-rc02-35854e7e92a` | source passed / current Head **43/43 passed** |
-| 4.1.3 | **Latest** | `doris-4.1.3-rc02-7126cf65d96` | source passed / current Head **43/43 passed** |
+| 2.1.11 | 2.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-2.1.11-rc01-97b77e6cda` | source passed / source PR 2 Head **43/43 passed** |
+| 3.0.8 | 3.0 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.0.8-rc01-09b0cc49a6` | source passed / source PR 2 Head **43/43 passed** |
+| 3.1.4 | 3.1 系列最高公开 patch；仍有官方包；不宣称维护状态 | `doris-3.1.4-rc02-7f5ba43de6` | source passed / source PR 2 Head **43/43 passed** |
+| 4.0.7 | **Stable** | `doris-4.0.7-rc02-35854e7e92a` | source passed / source PR 2 Head **43/43 passed** |
+| 4.1.3 | **Latest** | `doris-4.1.3-rc02-7126cf65d96` | source passed / source PR 2 Head **43/43 passed** |
 
 这里的 `passed` 绑定第 8.4 节记录的源实现候选 `7f6d970`：该候选完成了 98 项
-完整 Functional、36 项聚焦 Incremental、版本身份和清理证据。当前合并候选包含
+完整 Functional、36 项聚焦 Incremental、版本身份和清理证据。源仓当时的合并候选包含
 Contracts、Persist Docs、Source Freshness、Store Failures、Grants 和 Async MV，
-当前 Head 已在五个精确版本完成 43 项聚焦 Incremental 运行时验证；当前结果与
+源仓最终 PR 2 Head 已在五个精确版本完成 43 项聚焦 Incremental 运行时验证；该结果与
 历史源候选日志分别记录，未用历史 36 项结果替代当前证据。
 keyless RANDOM batch staging、物理
-Sequence mapping 前置校验和 Microbatch 不在源证据内，只能使用当前 Head 的
+Sequence mapping 前置校验和 Microbatch 不在源证据内，只能使用源仓最终 PR 2 Head 的
 新运行结果。
 
 发布定位与环境基线分别以 Doris 官方
@@ -163,7 +167,7 @@ python -m pytest -q test/functional/adapter/test_doris_incremental.py
 `DORIS_E2E_VERSION_EVIDENCE=<JSON>` 行。第二条命令不能替代完整套件。
 当前 `test/functional` 下只有 `adapter/`，所以 umbrella 路径也会收集同样的
 实际用例；正式证据仍记录本轮执行的 `test/functional/adapter` 命令和实际收集数。
-第 8.4 节源候选的 98 项与合并前 Microbatch PR Head 的 99 项都不能替代当前合并
+第 8.4 节源候选的 98 项与合并前 Microbatch PR Head 的 99 项都不能替代源仓合并
 候选的结果。
 `DORIS_TEST_EXPECTED_VERSION` 必须设置为当前矩阵行；Session Gate 会在测试前
 检查所有存活 FE/BE 的完整 Version 字符串。Expected `0.0.0` 会被拒绝；所有
@@ -398,19 +402,19 @@ Microbatch 用例必须同时验证：
 | INC-023 | Key 不在 Source 首列 | 首次 CTAS 自动调整物理列顺序 | 已覆盖 |
 | INC-024 | Key 是保留字 | Unique Key 与 Distribution 正确引用 | 已覆盖 |
 | INC-025 | 批内重复 Key | 同一条 DML 原子失败，目标数据不变 | 已覆盖 |
-| INC-026 | 可见 Sequence 列 | 后到达的低 Sequence 不覆盖高 Sequence 行；已有目标的模型配置与物理 mapping 必须完全一致 | 数据语义经五版本 E2E 覆盖；物理 mapping 前置校验经 Unit 与 PR #2 开发集群 E2E 覆盖，官方版本待复验 |
+| INC-026 | 可见 Sequence 列 | 后到达的低 Sequence 不覆盖高 Sequence 行；已有目标的模型配置与物理 mapping 必须完全一致 | 数据语义经五版本 E2E 覆盖；物理 mapping 前置校验经 Unit 与源仓 PR 2 开发集群 E2E 覆盖，官方版本待复验 |
 | INC-027 | 隐藏 Sequence Type | 写入前拒绝 `function_column.sequence_type` | Unit 已覆盖 |
-| INC-028 | 既有目标使用隐藏 Sequence Type | `merge` 与 `insert_overwrite` 均在 Hook、helper 和 DML 前拒绝 | Unit 与 PR #2 开发集群 E2E 已覆盖，官方版本待复验 |
+| INC-028 | 既有目标使用隐藏 Sequence Type | `merge` 与 `insert_overwrite` 均在 Hook、helper 和 DML 前拒绝 | Unit 与源仓 PR 2 开发集群 E2E 已覆盖，官方版本待复验 |
 | INC-030 | 整表 `insert_overwrite` | 本批缺失的旧行被删除；无物理 staging | 已覆盖 |
 | INC-031 | 静态分区覆盖 | 只替换命名分区，其他分区不变 | 已覆盖 |
 | INC-032 | `PARTITION(*)` | 只动态替换本批涉及的分区 | 已覆盖 |
 | INC-033 | Microbatch 四种粒度 | hour/day/month/year Batch ID、分区名和精确 UTC 边界正确 | Unit 已覆盖；五版本 E2E 待复验 |
-| INC-034 | 静态 Microbatch 首批与增量 | 首批精确 CTAS；缺分区 ADD；任意名称精确分区可解析；重叠分区拒绝；每批无物理 staging | Unit 与 PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
-| INC-035 | Dynamic Partition Microbatch | 配置与物理属性一致；不手动 ADD；窗口缺分区和属性漂移早失败 | Unit 与 PR #2 开发集群正常链路 E2E 已覆盖；缺分区失败注入和官方版本待复验 |
-| INC-036 | Microbatch 空批 | 命名分区 overwrite 清空旧行；其他分区不变；绝不生成 `PARTITION(*)` | Unit 与 PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-034 | 静态 Microbatch 首批与增量 | 首批精确 CTAS；缺分区 ADD；任意名称精确分区可解析；重叠分区拒绝；每批无物理 staging | Unit 与源仓 PR 2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-035 | Dynamic Partition Microbatch | 配置与物理属性一致；不手动 ADD；窗口缺分区和属性漂移早失败 | Unit 与源仓 PR 2 开发集群正常链路 E2E 已覆盖；缺分区失败注入和官方版本待复验 |
+| INC-036 | Microbatch 空批 | 命名分区 overwrite 清空旧行；其他分区不变；绝不生成 `PARTITION(*)` | Unit 与源仓 PR 2 开发集群 E2E 已覆盖；官方版本待复验 |
 | INC-037 | Microbatch UTC | aware UTC 边界渲染为无 Offset 的 UTC-naive Doris 字面量 | Unit 已覆盖；非 UTC Session 和官方版本 E2E 待复验 |
-| INC-038 | Microbatch Full Refresh | 首批 intermediate CTAS + 交换；后续逐批命名覆盖；数据不丢失、无完整数据二次 copy | PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
-| INC-039 | Microbatch 回填与执行顺序 | CLI start/end、lookback 均覆盖预期批次；Adapter 不启用并发批次 | 顺序能力 Unit、CLI/default-lookback PR #2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-038 | Microbatch Full Refresh | 首批 intermediate CTAS + 交换；后续逐批命名覆盖；数据不丢失、无完整数据二次 copy | 源仓 PR 2 开发集群 E2E 已覆盖；官方版本待复验 |
+| INC-039 | Microbatch 回填与执行顺序 | CLI start/end、lookback 均覆盖预期批次；Adapter 不启用并发批次 | 顺序能力 Unit、CLI/default-lookback 源仓 PR 2 开发集群 E2E 已覆盖；官方版本待复验 |
 | INC-040 | `delete+insert` / `delete_insert` | Hook 与 SQL 写入前拒绝；目标 Relation 不存在或数据不变 | 已覆盖 |
 | INC-041 | `insert_overwrite + unique_key` | 写入前拒绝并提示迁移到 `merge` 或删除 Key | 已覆盖 |
 | INC-042 | `merge` 无 Key | 编译失败并给出配置示例 | Unit 已覆盖 |
@@ -422,7 +426,7 @@ Microbatch 用例必须同时验证：
 | INC-053 | `fail` | 目标 Schema、列元数据、数据和 DDL 均不改变；零目标 DML/ALTER/交换 | 五版本 E2E 已覆盖 |
 | INC-054 | `append_new_columns` | 新列添加完成后写入冻结批次 | dbt Core 契约已覆盖 |
 | INC-055 | `sync_all_columns` | Add/Drop/Type Change 后正确写入 | dbt Core 契约已覆盖 |
-| INC-056 | Schema Change 冻结批次写入失败与重试 | 先物理 CTAS 冻结批次，再 ALTER + 等待，最后执行带重复 Key Guard 的 DML；JSON Parse 失败时目标数据不变且 staging 保留；重试先替换陈旧 staging，不重复 ALTER，成功后清理 | 冻结/失败重试经五版本 E2E 覆盖；keyless RANDOM helper 经 Unit 与 PR #2 开发集群 E2E 覆盖，官方版本待复验 |
+| INC-056 | Schema Change 冻结批次写入失败与重试 | 先物理 CTAS 冻结批次，再 ALTER + 等待，最后执行带重复 Key Guard 的 DML；JSON Parse 失败时目标数据不变且 staging 保留；重试先替换陈旧 staging，不重复 ALTER，成功后清理 | 冻结/失败重试经五版本 E2E 覆盖；keyless RANDOM helper 经 Unit 与源仓 PR 2 开发集群 E2E 覆盖，官方版本待复验 |
 | INC-057 | Schema Change Job 超时 | 新 Job 持续 `RUNNING`、旧 `FINISHED` Job 仍可见、最新 Job 暂不可见均给出确定性超时错误 | 三个 Unit 参数分支已覆盖 |
 | INC-060 | Full Refresh | 未启用 `persist_docs.columns` 时配置保留；一次 intermediate CTAS、零 copy INSERT、一次元数据交换 | 已覆盖 |
 | INC-061 | View → Table | 新模型上下文前 Snapshot；旧 View 在线完成 Replacement Build；再 Drop + Rename | 五版本正式 E2E 已覆盖 |
@@ -438,7 +442,7 @@ Microbatch 用例必须同时验证：
 | INC-071 | Pre/Post Hook 失败 | Pre 失败零 staging/DML；Post 失败后 DML 可见、逻辑 View 保留；Retry 先清理并收敛 | 五版本 E2E 已覆盖 |
 | INC-072 | Persistent Backup Marker 三轮运行 | Incremental/Partition 连续失败不发布 Canonical、不触碰 Backup；成功完整构建后才清理 | 真实 Doris E2E 已覆盖 |
 | INC-073 | View Snapshot 后 Replacement Build 或 Pre-hook 失败 | Snapshot 先完成；旧 View 在线、物理 Backup 保留、零目标 DML；Pre-hook 失败时 Replacement CTAS 尚未开始；修正模型后 Retry 成功并清理 Helper | 两种失败分支经五版本 E2E 覆盖 |
-| INC-080 | 自定义策略 | keyless RANDOM physical staging + dbt 标准五参数契约；Source 首列 DOUBLE 也可冻结 | Unit 与 PR #2 开发集群 E2E 已覆盖，官方版本待复验 |
+| INC-080 | 自定义策略 | keyless RANDOM physical staging + dbt 标准五参数契约；Source 首列 DOUBLE 也可冻结 | Unit 与源仓 PR 2 开发集群 E2E 已覆盖，官方版本待复验 |
 | Persist Docs | Incremental 列注释建表与恢复 | 14 项覆盖 Append 更新、Merge、可见 Sequence、首次/Full Refresh Copy 失败恢复和 Microbatch；私有 keyless docs source + intermediate 为两次物理写入，普通后续增量仍单 DML | `14/14 passed`，包含在完整 Adapter Functional 中 |
 
 ## 6. 数据与失败注入
@@ -494,9 +498,9 @@ Microbatch 用例必须同时验证：
    Pytest 10 前清理。
 
 第 5 节当前登记的场景均已有自动化覆盖：标记“五版本 E2E”的项目已经进入下述
-源候选 Functional/聚焦矩阵；标记“PR #2 开发集群 E2E、官方版本待复验”的新增
+源候选 Functional/聚焦矩阵；标记“源仓 PR 2 开发集群 E2E、官方版本待复验”的新增
 项目尚不能借用该矩阵结论。只标记 Unit 的源候选项目由 `7f6d970` 的 327 项 Unit
-结果覆盖。PR #2 Head 的任何结果都必须单独登记，不能复用这些数量。
+结果覆盖。源仓 PR 2 Head 的任何结果都必须单独登记，不能复用这些数量。
 新增场景时必须先补测试，再扩大对外声明范围。
 
 对外声明一个 Doris 版本通过兼容验证前，该版本还必须满足：
@@ -566,7 +570,7 @@ Unit 与五版本 E2E 绑定测试提交
 与聚焦 Incremental 的正式结果按版本登记在第 8.4 节。此前 Unit 321 与开发
 混合集群结果早于最终调整，仅保留为历史记录。
 
-加入 Microbatch 前，PR #2 的 `agent/complete-incremental-strategies` 选择性移植
+加入 Microbatch 前，源仓 PR 2 的 `agent/complete-incremental-strategies` 选择性移植
 工作树另行完成了分支验证：252 项 Unit 全部通过（15.19s）；40 项聚焦 Incremental Functional 在
 FE/BE 同为 `doris-0.0.0-ebec9530ba` 的本地开发集群上全部通过（26 warnings，
 46.15s），Table/View/Partition 共享宏回归 12 项全部通过（12 warnings，9.78s），
@@ -578,7 +582,7 @@ FE/BE 同为 `doris-0.0.0-ebec9530ba` 的本地开发集群上全部通过（26 
 套件通过，遗留的本轮测试 Schema 已精确清理。这个开发
 构建结果证明移植后的关键代码路径可运行，但不能替代第 8.4 节的正式发行版本矩阵复验。
 其中 40 项聚焦套件明确覆盖 keyless RANDOM batch staging、keyless append target
-和物理 Sequence mapping 前置校验；这些是 PR #2 新增边界，正式版本状态仍为
+和物理 Sequence mapping 前置校验；这些是源仓 PR 2 新增边界，正式版本状态仍为
 pending。
 
 2026-08-04 的 Microbatch dirty PR Head 候选（base SHA `5d001da6a076d77e4241cf6c1af4e1b17c62854b`）
@@ -601,13 +605,13 @@ pending。
 查询结果均为 0。4.1.3 的两项用例覆盖静态分区、Dynamic Partition、空批清空、
 显式 event-time Backfill 和 Full Refresh，但 Adapter 仍为 `dirty=true`，且没有
 运行 4.1.3 的完整 99 项套件；所以它只是聚焦开发证据，不能把第 8.4 节的旧完整
-结果升级成当前 PR Head 的正式通过。其余四个精确发行版本仍待 Microbatch 复验。
+结果升级成源仓最终 PR 2 Head 的正式通过。其余四个精确发行版本仍待 Microbatch 复验。
 
-以上 PR #2 结果均发生在合并主干前；当前合并候选重新包含 Contracts、Persist Docs、
+以上源仓 PR 2 结果均发生在合并主干前；源仓当时的合并候选重新包含 Contracts、Persist Docs、
 Source Freshness、Store Failures、Grants 和 Async MV，必须重新记录完整套件的实际
 收集数与结果，不能直接沿用 99 项结果。
 
-#### 当前合并后 PR Head
+#### 源仓合并前最终 PR 2 Head
 
 | 套件 | 当前结果 |
 | --- | --- |
@@ -661,7 +665,7 @@ Pre-model Ordering 实现及当时包含的 Incremental 边界用例在五个正
 
 本节的 `passed` 范围严格限定为上表两套实际运行的 E2E、精确版本 Gate、Artifact
 与清理证据。第 5 节标记为 Unit-only 的检查不表示在每个 Doris 版本上单独执行，
-它们由同一干净候选的 327 项 Unit 结果覆盖。本节不包含 PR #2 后续新增的
+它们由同一干净候选的 327 项 Unit 结果覆盖。本节不包含源仓 PR 2 后续新增的
 keyless RANDOM batch staging、物理 Sequence mapping 前置校验或 Microbatch。
 
 每个版本均记录 FE/BE 完整 Version 完全一致、所有节点 `Alive=true`、测试数据库

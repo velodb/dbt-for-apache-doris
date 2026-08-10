@@ -1,9 +1,9 @@
 # dbt-doris 状态与 TODO
 
-本文档同时记录当前 `main` 已具备的能力和后续工作。当前审核基线为
+本文档同时记录当前实现已具备的能力和后续工作。迁入的代码审核基线为源仓
 `d84328221e5413b587c94663cfae1141bb7bdd04`，包含 Incremental/Microbatch
-[PR #2](https://github.com/xylaaaaa/dbt-doris-adapter/pull/2) 和 Failure-safe
-Snapshot [PR #3](https://github.com/xylaaaaa/dbt-doris-adapter/pull/3)。
+[源仓 PR #2](https://github.com/xylaaaaa/dbt-doris-adapter/pull/2) 和 Failure-safe
+Snapshot [源仓 PR #3](https://github.com/xylaaaaa/dbt-doris-adapter/pull/3)。
 
 状态规则：
 
@@ -125,22 +125,23 @@ dbt Core 编排。Adapter 负责把每个批次映射到 Doris 精确 RANGE 分�
 
 ## 3. 测试证据状态
 
-测试数量只用于发现收集变化，不能替代通过状态。历史结果不能直接升级为当前
-`main` 的发布承诺；详细口径见
+测试数量只用于发现收集变化，不能替代通过状态。历史结果不能直接升级为迁入
+实现的发布承诺；详细口径见
 [总体测试方案](dbt-doris-test-plan.zh-CN.md)。
 
-- [x] 当前 `main` 可收集 373 个 Unit Test；最新 CI 在 Python 3.10/3.14 均为
-  373 passed，Flake8、wheel/sdist 和 Twine Check 同时通过。
-- [x] 当前 `main` 可收集 168 个 Functional Item：60 个官方合约 Item + 108 个
+- [x] 迁入的源仓基线可收集 373 个 Unit Test；迁移前源仓最新 CI 在 Python
+  3.10/3.14 均为 373 passed，Flake8、wheel/sdist 和 Twine Check 同时通过。
+- [x] 迁入的源仓基线可收集 168 个 Functional Item：60 个官方合约 Item + 108 个
   Doris 专项 Item。
-- [x] 当前 `main` 与 PR #3 验证 Head 的 Git Tree 完全相同；Doris 4.1.3 上完整
-  Adapter Functional 为 168/168，Snapshot 专项和官方兼容套件为 16/16。
-- [x] 当前 Incremental 合并树在 Doris 2.1.11、3.0.8、3.1.4、4.0.7、4.1.3
+- [x] 迁移前源仓 `main` 的实现提交 `d843282` 与源仓 PR 3 验证 Head 的 Git Tree
+  完全相同；Doris 4.1.3 上完整 Adapter Functional 为 168/168，Snapshot 专项和
+  官方兼容套件为 16/16。
+- [x] 迁移前源仓 Incremental 合并树在 Doris 2.1.11、3.0.8、3.1.4、4.0.7、4.1.3
   五个精确版本上分别通过 43/43 项聚焦 Functional，并完成 Version Gate 和资源
   清理验证。
 - [x] 历史代码 `f5e30c64ef7eb8320cf359c3d96cf62b595faf00` 在上述五个
   版本分别通过 21 项 Async MV Functional；当前新增的第 22 项只在 4.1.3 验证。
-- [ ] 对当前 `main` 执行五个精确 Doris 版本的完整 168 项 Functional 矩阵；当前
+- [ ] 对迁入的当前实现执行五个精确 Doris 版本的完整 168 项 Functional 矩阵；当前
   五版本证据只覆盖 43 项 Incremental，完整套件只覆盖 Doris 4.1.3。
 - [ ] 将真实 Doris Functional 作为 PR 门禁或 Nightly CI，并保存精确 Commit、
   FE/BE 版本、测试日志和清理结果。
@@ -189,19 +190,19 @@ dbt Core 编排。Adapter 负责把每个批次映射到 Doris 精确 RANGE 分�
 
 ### M1：Beta 功能与安全性收口（已完成，2026-08-09）
 
-目标：在最新 `main` 上重建两个旧分支，形成唯一、可回归的功能基线。
+目标：在迁移前源仓最新 `main` 上重建两个旧分支，形成唯一、可回归的功能基线。
 
-- [x] PR #2 在最新主线上重建并合入四种 Incremental 策略，不回退 Contracts、
+- [x] 源仓 PR 2 在最新主线上重建并合入四种 Incremental 策略，不回退 Contracts、
   Grants、Persist Docs、Source Freshness、Store Failures、Async MV、测试或文档。
-- [x] PR #3 在 PR #2 合并树上重建并合入 Failure-safe Snapshot：每次重新构建
+- [x] 源仓 PR 3 在源仓 PR 2 合并树上重建并合入 Failure-safe Snapshot：每次重新构建
   Helper/Staging Table，完整写入和验证后原子替换，并覆盖 Check/Timestamp、Hard
   Delete、Schema Evolution 和失败恢复。
-- [x] 两个旧 Draft PR 均转为 Ready、完成复核并合入 `main`。
-- [x] 合并树通过 Flake8、373 项 Unit、wheel/sdist 与 Twine Check。
+- [x] 两个源仓旧 Draft PR 均转为 Ready、完成复核并合入源仓 `main`。
+- [x] 源仓合并树通过 Flake8、373 项 Unit、wheel/sdist 与 Twine Check。
 - [x] Doris 4.1.3 完整 Adapter Functional 168/168、Snapshot 16/16；五个精确
   Doris 版本的聚焦 Incremental 分别为 43/43。
 
-验收结果：合并态无旧功能回退；Lint、Unit、Build 全绿；Doris 4.1.3 全量
+验收结果：源仓合并态无旧功能回退；Lint、Unit、Build 全绿；Doris 4.1.3 全量
 Functional 通过；Snapshot 失败注入不会丢失最后一次成功发布的 Canonical Relation。
 远端开发分支清理不属于功能验收，仍保留在发布治理 TODO。
 

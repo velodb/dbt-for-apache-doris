@@ -26,8 +26,8 @@ package_name = "dbt-doris"
 # make sure this always matches dbt/adapters/{adapter}/__version__.py
 package_version = "1.0.0"
 dbt_core_version = "1.12.0"
-description = "A community-maintained Apache Doris adapter for dbt"
-repository_url = "https://github.com/xylaaaaa/dbt-doris-adapter"
+description = "A dbt adapter for VeloDB and Apache Doris"
+repository_url = "https://github.com/velodb/dbt-for-apache-doris"
 long_description = Path("README.md").read_text(encoding="utf-8")
 
 setup(
@@ -37,7 +37,7 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     author="Apache Doris contributors",
-    maintainer="xylaaaaa",
+    maintainer="VeloDB contributors",
     url=repository_url,
     project_urls={
         "Documentation": repository_url + "#readme",
