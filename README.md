@@ -2,13 +2,6 @@
 
 A dbt adapter for VeloDB and Apache Doris.
 
-This repository preserves the standalone development history migrated from
-[`xylaaaaa/dbt-doris-adapter`](https://github.com/xylaaaaa/dbt-doris-adapter)
-and is derived from the
-[`extension/dbt-doris`](https://github.com/apache/doris/tree/master/extension/dbt-doris)
-component of Apache Doris. It is not an official Apache Software Foundation or
-dbt Labs release.
-
 ## Compatibility and verification
 
 | Component | Development or test baseline |
