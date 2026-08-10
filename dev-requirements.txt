@@ -1,0 +1,54 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# dbt-core and dbt-tests-adapter are installed from PyPI.
+#
+# These were previously git dependencies pointing at subdirectories of the
+# dbt-core repository (`core` and `tests/adapter`). Neither path exists any more,
+# so pip failed before it could even resolve versions. dbt-tests-adapter is also
+# published on its own release line, with version numbers that do not track
+# dbt-core -- pin it independently.
+dbt-core~=1.12.0
+dbt-tests-adapter~=1.20.0
+
+mypy
+freezegun
+black
+bumpversion
+flake8
+flaky
+ipdb
+pip-tools
+pre-commit
+pytest
+pytest-dotenv
+pytest-logbook
+# pytest-logbook still imports logbook.compat, which logbook removed in 1.8.
+# Without this ceiling every test errors during setup with
+# "AttributeError: module 'logbook' has no attribute 'compat'".
+logbook<1.8
+pytest-csv
+pytest-xdist
+pytz
+tox>=3.13
+twine
+wheel
+# Keep the floor at 8.0.33 for the authentication fixes, and no ceiling: the
+# 8.x line caps protobuf at 4.x, while dbt-core needs 5.x, so `<8.3` made the
+# environment unresolvable. setup.py has no ceiling either -- the two must agree,
+# or tests run against a connector major version users never get.
+mysql-connector-python>=8.0.33
