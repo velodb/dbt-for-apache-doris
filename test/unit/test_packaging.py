@@ -43,19 +43,10 @@ def test_setup_requires_python_3_10():
     assert 'python_requires=">=3.10"' in read_setup_py()
 
 
-def test_only_maintained_docs_are_published_in_git():
+def test_docs_directory_is_not_published_in_git():
     gitignore_lines = (PROJECT_ROOT / ".gitignore").read_text().splitlines()
 
-    maintained_docs = [
-        "materialized-view.zh-CN.md",
-        "dbt-doris-todo-list.zh-CN.md",
-        "dbt-doris-issue-65967-async-materialized-view-requirements.zh-CN.md",
-    ]
-
-    assert "docs/*" in gitignore_lines
-    for document in maintained_docs:
-        assert f"!docs/{document}" in gitignore_lines
-        assert (PROJECT_ROOT / "docs" / document).is_file()
+    assert "/docs/" in gitignore_lines
 
 
 def test_docs_are_excluded_from_distributions():

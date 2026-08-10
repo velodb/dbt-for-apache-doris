@@ -144,12 +144,5 @@ dbt_packages/
 .dbt/
 profiles.yml
 
-# Publish maintained user/roadmap documents; keep other research notes local.
-docs/*
-!docs/materialized-view.zh-CN.md
-!docs/materialized-view-test-plan.zh-CN.md
-!docs/incremental.zh-CN.md
-!docs/incremental-test-plan.zh-CN.md
-!docs/dbt-doris-test-plan.zh-CN.md
-!docs/dbt-doris-todo-list.zh-CN.md
-!docs/dbt-doris-issue-65967-async-materialized-view-requirements.zh-CN.md
+# The target repository intentionally omits standalone design and test records.
+/docs/

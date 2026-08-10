@@ -154,12 +154,7 @@ Ephemeral models are compiled by dbt Core.
 
 The adapter supports enforced model contracts, persisted relation and column
 documentation, source freshness, stored data-test failures, and declarative
-relation grants. Their configuration and Doris-specific behavior are documented
-in [Contracts](docs/foundation/contracts.zh-CN.md),
-[Persist Docs](docs/foundation/persist-docs.zh-CN.md),
-[Source Freshness](docs/foundation/source-freshness.zh-CN.md),
-[Store Failures](docs/foundation/store-failures.zh-CN.md), and
-[Grants](docs/foundation/grants.zh-CN.md).
+relation grants.
 
 ### Incremental models
 
@@ -258,13 +253,7 @@ old adapter behavior where an explicitly configured `insert_overwrite` acted
 like an upsert. To prevent a silent change to destructive overwrite semantics,
 the legacy combination `insert_overwrite + unique_key` is rejected: change the
 strategy to `merge` for upserts, or remove `unique_key` to explicitly opt in to
-native overwrite, which can remove rows absent from the new batch. See the
-[Chinese Incremental user guide](docs/incremental.zh-CN.md)
-for configuration, Microbatch partition semantics, and migration details; the
-[current Incremental test matrix](docs/incremental-tests.zh-CN.md)
-summarizes what is tested and how, and the
-[Incremental test plan](docs/incremental-test-plan.zh-CN.md)
-for SQL-count and failure-recovery acceptance criteria.
+native overwrite, which can remove rows absent from the new batch.
 
 ### Asynchronous materialized views
 
@@ -407,22 +396,7 @@ Only Doris asynchronous materialized views are managed. Synchronous
 materialized views (rollups) have a different lifecycle and remain explicitly
 out of scope.
 
-The complete configuration and lifecycle guide is available in
-[docs/materialized-view.zh-CN.md](docs/materialized-view.zh-CN.md). The
-[Async MV test record](docs/materialized-view-test-plan.zh-CN.md) lists all 22
-current live-Doris cases and 124 directly related unit/adapter items, plus the
-historical 21-case five-version procedure, results, and explicit coverage gaps. The
-[implementation TODO](docs/dbt-doris-todo-list.zh-CN.md) and
-[#65967 acceptance requirements](docs/dbt-doris-issue-65967-async-materialized-view-requirements.zh-CN.md)
-record the delivered scope and remaining adapter work.
-
 ## Test
-
-The adapter-wide strategy, including the upstream dbt Adapter contract suites,
-Doris-specific feature tests, version matrix, and release gates, is documented
-in [docs/dbt-doris-test-plan.zh-CN.md](docs/dbt-doris-test-plan.zh-CN.md).
-The Incremental-specific case matrix remains in
-[docs/incremental-test-plan.zh-CN.md](docs/incremental-test-plan.zh-CN.md).
 
 Unit tests do not require a Doris cluster:
 

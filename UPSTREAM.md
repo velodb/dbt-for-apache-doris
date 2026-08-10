@@ -31,6 +31,10 @@ Actions runs remains in the standalone source repository.
 Unqualified pull-request numbers in imported commit messages also refer to that
 standalone source repository.
 
+The target worktree intentionally omits the standalone `docs/` directory. Those
+documents remain available in the standalone source repository and imported
+history, but they are not part of the current target tree or Python package.
+
 Generated caches, test logs, local dbt runtime state, credentials, Doris
 monorepo-only files, and unrelated Doris components were not imported.
 
