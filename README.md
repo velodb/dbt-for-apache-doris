@@ -7,10 +7,10 @@ A dbt adapter for VeloDB and Apache Doris.
 | Component | Development or test baseline |
 | --- | --- |
 | dbt Core | 1.12.x; Microbatch requires 1.12.x; the historical release matrix ran on 1.12.0 |
-| Apache Doris | 2.1.5+ expected runtime minimum; exact historical release evidence is listed below and in the Incremental guide |
+| Apache Doris | Formal-release gate: 2.x >= 2.1.5, 3.x except 3.0.0, and 4.x+; identifiable `doris-0.0.0-<git sha>` source builds are accepted for development testing |
 | Historical Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the recorded CTAS-snapshot, durable-marker, and pre-model-ordering baseline |
 | Historical mixed-cluster Functional run | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed, but not official-release compatibility evidence |
-| Doris Async MV gate unit tests | Mocked version strings for 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
+| Doris Async MV gate unit tests | Mocked source-build identity plus release versions 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
 | Python | 3.10 or newer; final matrix ran on 3.12.13 |
 | Database protocol | Doris MySQL protocol |
 
@@ -369,21 +369,24 @@ Asynchronous-MV version evidence is:
 | --- | --- | --- |
 | Historical full Functional run on a mixed cluster | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed | The implemented paths worked on that exact mixed development cluster; this is not official-release compatibility evidence |
 | Focused Async MV E2E matrix | Clean commit `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`, `dirty=false`; the same 21 MV tests passed without skips on 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 | Async MV creation, refresh policy, task waiting, configuration change, rollback, docs, custom schema/alias, and relation-type switching passed on those exact builds |
-| Unit tests with mocked `SHOW FRONTENDS` rows | 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 | Version parsing and gate decisions only; no Doris feature compatibility |
+| Unit tests with mocked `SHOW FRONTENDS` rows | `doris-0.0.0-<git sha>`, 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 | Version parsing and gate decisions only; no Doris feature compatibility |
 
 Before managing an asynchronous MV, the adapter prefers the connected and
 Master FE versions from `SHOW FRONTENDS`; if neither role can be identified, it
 validates the first returned row. An unparsable or unsupported selected FE is
-rejected. The current code gate accepts 2.x versions at 2.1.5 or newer, every
-3.x version except 3.0.0, and major version 4 or newer.
+rejected. The current code gate accepts identifiable source builds reported as
+`doris-0.0.0-<hex git sha>`, 2.x releases at 2.1.5 or newer, every 3.x release
+except 3.0.0, and major version 4 or newer. A bare `0.0.0` or a development
+version without a hexadecimal Git revision remains rejected.
 
 Those boundaries are hard-coded runtime conditions, not results from the
 official-release E2E matrix. In particular, this repository has not established
 through live-cluster testing that 2.1.5 is the exact minimum or that 3.0.0 is
-incompatible. Gate acceptance and the historical mixed-cluster run are therefore
-not compatibility guarantees. Before production use, require a completed matrix
-row for the exact Doris release or run the same evidence procedure against that
-release.
+incompatible. Source-build acceptance lets development tests exercise the actual
+cluster capability; it is not release compatibility evidence. Gate acceptance
+and the historical mixed-cluster run are therefore not compatibility guarantees.
+Before production use, require a completed matrix row for the exact Doris release
+or run the same evidence procedure against that release.
 
 Only Doris asynchronous materialized views are managed. Synchronous
 materialized views (rollups) have a different lifecycle and remain explicitly
@@ -414,6 +417,9 @@ make test-functional
 The runner validates the configuration, connects to Doris, records FE/BE
 versions, checks the live BE count against the requested replication number,
 and refuses to run if the fixed test database `cross_db_test` already exists.
+When the exact-release setting is empty, source builds reported as
+`doris-0.0.0-<hex git sha>` can run the Async MV tests; this does not turn
+`0.0.0` into formal release evidence.
 Use `--preflight-only` to perform those checks without starting pytest, or pass
 pytest selection arguments after `--`:
 

@@ -1903,6 +1903,7 @@ def test_adapter_maps_async_materialized_views_to_the_dbt_relation_type():
 @pytest.mark.parametrize(
     "version",
     [
+        "doris-0.0.0-2f26860a79c",
         "doris-2.1.5-release",
         "doris-2.1.10-release",
         "doris-3.0.1-release",
@@ -1924,6 +1925,10 @@ def test_materialized_view_version_contract_accepts_configured_gate_versions(
 @pytest.mark.parametrize(
     "version",
     [
+        "doris-0.0.0",
+        "doris-0.0.0-abcdef",
+        "doris-0.0.0-not-a-git-sha",
+        "doris-0.0.0-2f26860a79c-dirty",
         "doris-2.1.4-release",
         "doris-3.0.0-release",
     ],
