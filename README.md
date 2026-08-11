@@ -431,10 +431,11 @@ python scripts/run_doris_functional_tests.py --preflight-only
 python scripts/run_doris_functional_tests.py -- -k snapshot -vv
 ```
 
-The tests create and drop databases, tables, views, and materialized views. The
-`full` suite also creates and drops users and executes `GRANT`/`REVOKE`; select
-it with `DORIS_TEST_SUITE=full`. Never run the suite against a production or
-shared cluster, and do not run multiple Functional sessions concurrently.
+The tests create and drop databases, tables, views, materialized views, and
+temporary users, and they execute `GRANT`/`REVOKE`. The configured test account
+must have permission to perform those operations. Never run the suite against a
+production or shared cluster, and do not run multiple Functional sessions
+concurrently.
 
 ## License and upstream
 

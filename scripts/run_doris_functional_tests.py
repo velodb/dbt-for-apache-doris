@@ -31,7 +31,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "test" / "doris_test.env"
 FUNCTIONAL_TEST_PATH = "test/functional"
-GRANTS_TEST_PATH = "test/functional/adapter/test_doris_grants.py"
 FIXED_CROSS_DATABASE = "cross_db_test"
 
 _CONFIG_KEYS = {
@@ -41,7 +40,6 @@ _CONFIG_KEYS = {
     "DORIS_TEST_PASSWORD",
     "DORIS_TEST_SCHEMA",
     "DORIS_TEST_REPLICATION_NUM",
-    "DORIS_TEST_SUITE",
 }
 _DEFAULT_VALUES = {
     "DORIS_TEST_HOST": "127.0.0.1",
@@ -50,7 +48,6 @@ _DEFAULT_VALUES = {
     "DORIS_TEST_PASSWORD": "",
     "DORIS_TEST_SCHEMA": "dbt_test",
     "DORIS_TEST_REPLICATION_NUM": "1",
-    "DORIS_TEST_SUITE": "core",
 }
 _KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _SCHEMA_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -74,7 +71,6 @@ class DorisTestSettings:
     password: str
     schema: str
     replication_num: int
-    suite: str
 
     def pytest_environment(self, base_environment=None):
         """Return an isolated environment for the pytest subprocess."""
@@ -206,10 +202,6 @@ def resolve_settings(file_values):
         1,
     )
 
-    suite = values["DORIS_TEST_SUITE"].strip().casefold()
-    if suite not in {"core", "full"}:
-        raise RunnerError("DORIS_TEST_SUITE must be either 'core' or 'full'.")
-
     return DorisTestSettings(
         host=host,
         port=port,
@@ -217,7 +209,6 @@ def resolve_settings(file_values):
         password=values["DORIS_TEST_PASSWORD"],
         schema=schema,
         replication_num=replication_num,
-        suite=suite,
     )
 
 
@@ -368,7 +359,7 @@ def _reject_parallel_pytest(pytest_args):
             )
 
 
-def build_pytest_command(settings, pytest_args):
+def build_pytest_command(pytest_args):
     _reject_parallel_pytest(pytest_args)
     command = [
         sys.executable,
@@ -380,14 +371,12 @@ def build_pytest_command(settings, pytest_args):
         "no:xdist.looponfail",
         FUNCTIONAL_TEST_PATH,
     ]
-    if settings.suite == "core":
-        command.append(f"--ignore={GRANTS_TEST_PATH}")
     command.extend(pytest_args)
     return command
 
 
 def run_functional_tests(settings, pytest_args, run=subprocess.run):
-    command = build_pytest_command(settings, pytest_args)
+    command = build_pytest_command(pytest_args)
     completed = run(
         command,
         cwd=PROJECT_ROOT,
@@ -419,7 +408,6 @@ def _print_settings(settings):
     print(f"  password: {'set (hidden)' if settings.password else 'empty'}")
     print(f"  test schema namespace: {settings.schema}")
     print(f"  replication number: {settings.replication_num}")
-    print(f"  suite: {settings.suite}")
 
 
 def _print_cluster_summary(summary):
@@ -483,11 +471,10 @@ def main(argv=None):
             "WARNING: tests are destructive and must not run concurrently or "
             "against a production/shared cluster."
         )
-        if settings.suite == "full":
-            print(
-                "WARNING: the full suite creates and drops temporary users and "
-                "executes GRANT/REVOKE."
-            )
+        print(
+            "WARNING: the suite creates and drops temporary users and executes "
+            "GRANT/REVOKE; the configured account must have those privileges."
+        )
         return run_functional_tests(settings, arguments.pytest_args)
     except RunnerError as error:
         print(f"ERROR: {_redact(str(error), password)}", file=sys.stderr)

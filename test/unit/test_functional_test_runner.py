@@ -94,8 +94,8 @@ def test_example_configuration_is_parseable():
 
     assert values["DORIS_TEST_HOST"] == "127.0.0.1"
     assert values["DORIS_TEST_PASSWORD"] == ""
-    assert values["DORIS_TEST_SUITE"] == "core"
     assert "DORIS_TEST_EXPECTED_VERSION" not in values
+    assert "DORIS_TEST_SUITE" not in values
 
 
 def test_config_parser_handles_export_quotes_hashes_and_equals(tmp_path):
@@ -124,6 +124,10 @@ def test_config_parser_handles_export_quotes_hashes_and_equals(tmp_path):
         ("DORIS_TEST_HOST='unterminated\n", "invalid quoted value"),
         (
             "DORIS_TEST_EXPECTED_VERSION=4.1.3\n",
+            "unknown configuration key",
+        ),
+        (
+            "DORIS_TEST_SUITE=core\n",
             "unknown configuration key",
         ),
     ],
@@ -159,7 +163,6 @@ def test_config_parser_rejects_non_utf8_input(tmp_path):
         ("DORIS_TEST_REPLICATION_NUM", "0", "at least 1"),
         ("DORIS_TEST_SCHEMA", "mysql", "system schema"),
         ("DORIS_TEST_SCHEMA", "bad-schema", "letters, digits, and underscores"),
-        ("DORIS_TEST_SUITE", "unknown", "core.*full"),
     ],
 )
 def test_settings_validation(key, value, message):
@@ -291,17 +294,13 @@ def test_preflight_rejects_replication_above_live_backend_count():
 )
 def test_pytest_command_rejects_parallel_execution(parallel_arguments):
     with pytest.raises(runner.RunnerError, match="Parallel pytest"):
-        runner.build_pytest_command(settings(), parallel_arguments)
+        runner.build_pytest_command(parallel_arguments)
 
 
-def test_core_and_full_commands_select_grant_coverage():
-    core_command = runner.build_pytest_command(settings(), ["-k", "snapshot"])
-    full_command = runner.build_pytest_command(
-        settings(DORIS_TEST_SUITE="full"),
-        ["-vv"],
-    )
+def test_pytest_command_does_not_exclude_grant_tests_by_default():
+    command = runner.build_pytest_command([])
 
-    assert core_command == [
+    assert command == [
         runner.sys.executable,
         "-m",
         "pytest",
@@ -310,20 +309,6 @@ def test_core_and_full_commands_select_grant_coverage():
         "-p",
         "no:xdist.looponfail",
         runner.FUNCTIONAL_TEST_PATH,
-        f"--ignore={runner.GRANTS_TEST_PATH}",
-        "-k",
-        "snapshot",
-    ]
-    assert full_command == [
-        runner.sys.executable,
-        "-m",
-        "pytest",
-        "-p",
-        "no:xdist",
-        "-p",
-        "no:xdist.looponfail",
-        runner.FUNCTIONAL_TEST_PATH,
-        "-vv",
     ]
 
 
@@ -398,7 +383,9 @@ def test_main_runs_after_configuration_and_preflight(tmp_path, monkeypatch, caps
 
     assert runner.main(["--config", str(config)]) == 0
     assert calls == [("preflight", "fe.test"), ("pytest", "fe.test", [])]
-    assert "tests are destructive" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "tests are destructive" in output
+    assert "creates and drops temporary users" in output
 
 
 def test_main_redacts_preflight_errors_and_does_not_run_tests(
