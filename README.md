@@ -7,7 +7,7 @@ A dbt adapter for VeloDB and Apache Doris.
 | Component | Development or test baseline |
 | --- | --- |
 | dbt Core | 1.12.x; Microbatch requires 1.12.x; the historical release matrix ran on 1.12.0 |
-| Apache Doris | Formal-release gate: 2.x >= 2.1.5, 3.x except 3.0.0, and 4.x+; identifiable `doris-0.0.0-<git sha>` source builds are accepted for development testing |
+| Apache Doris | Async MV Adapter runtime gate: 2.x >= 2.1.5, 3.x except 3.0.0, and 4.x+; identifiable `doris-0.0.0-<git sha>` source builds are accepted for development testing |
 | Historical Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the recorded CTAS-snapshot, durable-marker, and pre-model-ordering baseline |
 | Historical mixed-cluster Functional run | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed, but not official-release compatibility evidence |
 | Doris Async MV gate unit tests | Mocked source-build identity plus release versions 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
