@@ -27,11 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def settings(**overrides):
-    values = {
-        "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE": "YES",
-        **overrides,
-    }
-    return runner.resolve_settings(values)
+    return runner.resolve_settings(overrides)
 
 
 def version_evidence(backend_count=1):
@@ -94,7 +90,6 @@ def test_example_configuration_is_parseable():
     assert values["DORIS_TEST_HOST"] == "127.0.0.1"
     assert values["DORIS_TEST_PASSWORD"] == ""
     assert values["DORIS_TEST_SUITE"] == "core"
-    assert values["DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE"] == "NO"
 
 
 def test_config_parser_handles_export_quotes_hashes_and_equals(tmp_path):
@@ -157,7 +152,6 @@ def test_config_parser_rejects_non_utf8_input(tmp_path):
         ("DORIS_TEST_EXPECTED_VERSION", "4.1", "MAJOR.MINOR.PATCH"),
         ("DORIS_TEST_EXPECTED_VERSION", "0.0.0", "development placeholder"),
         ("DORIS_TEST_SUITE", "unknown", "core.*full"),
-        ("DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE", "true", "exactly YES or NO"),
     ],
 )
 def test_settings_validation(key, value, message):
@@ -355,7 +349,7 @@ def test_run_uses_repo_root_isolated_environment_and_returns_pytest_code(
     assert kwargs["env"]["DORIS_TEST_EXPECTED_VERSION"] == "4.1.3"
 
 
-def test_main_preflight_only_does_not_require_acknowledgement_or_run_tests(
+def test_main_preflight_only_does_not_run_tests(
     tmp_path,
     monkeypatch,
     capsys,
@@ -382,23 +376,25 @@ def test_main_preflight_only_does_not_require_acknowledgement_or_run_tests(
     assert "sentinel-secret" not in captured.err
 
 
-def test_main_requires_explicit_destructive_acknowledgement(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    config = tmp_path / "not-acknowledged.env"
-    config.write_text("DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE=NO\n")
-    monkeypatch.setattr(
-        runner,
-        "preflight_connection",
-        lambda _: pytest.fail("runner must stop before connecting"),
-    )
+def test_main_runs_after_configuration_and_preflight(tmp_path, monkeypatch, capsys):
+    config = tmp_path / "run.env"
+    config.write_text("DORIS_TEST_HOST=fe.test\n")
+    calls = []
 
-    return_code = runner.main(["--config", str(config)])
+    def preflight(test_settings):
+        calls.append(("preflight", test_settings.host))
+        return runner.ClusterSummary(1, 1, ("doris-4.1.3-release",))
 
-    assert return_code == 2
-    assert "ACKNOWLEDGE_DESTRUCTIVE=YES" in capsys.readouterr().err
+    def run_tests(test_settings, pytest_args):
+        calls.append(("pytest", test_settings.host, pytest_args))
+        return 0
+
+    monkeypatch.setattr(runner, "preflight_connection", preflight)
+    monkeypatch.setattr(runner, "run_functional_tests", run_tests)
+
+    assert runner.main(["--config", str(config)]) == 0
+    assert calls == [("preflight", "fe.test"), ("pytest", "fe.test", [])]
+    assert "tests are destructive" in capsys.readouterr().out
 
 
 def test_main_redacts_preflight_errors_and_does_not_run_tests(
@@ -407,10 +403,7 @@ def test_main_redacts_preflight_errors_and_does_not_run_tests(
     capsys,
 ):
     config = tmp_path / "failed-preflight.env"
-    config.write_text(
-        "DORIS_TEST_PASSWORD=sentinel-secret\n"
-        "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE=YES\n"
-    )
+    config.write_text("DORIS_TEST_PASSWORD=sentinel-secret\n")
     monkeypatch.setattr(
         runner,
         "preflight_connection",
@@ -433,7 +426,7 @@ def test_main_redacts_preflight_errors_and_does_not_run_tests(
 
 def test_main_returns_interrupted_status(monkeypatch, tmp_path, capsys):
     config = tmp_path / "interrupt.env"
-    config.write_text("DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE=YES\n")
+    config.write_text("")
     monkeypatch.setattr(
         runner,
         "preflight_connection",

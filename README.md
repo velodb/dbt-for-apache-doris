@@ -405,7 +405,7 @@ copy:
 ```shell
 cp test/doris_test.env.example test/doris_test.env
 chmod 600 test/doris_test.env
-# Edit test/doris_test.env, including the destructive-test acknowledgement.
+# Edit test/doris_test.env with the dedicated test-cluster connection.
 python scripts/run_doris_functional_tests.py --config test/doris_test.env
 # Equivalent after the default config file is created:
 make test-functional

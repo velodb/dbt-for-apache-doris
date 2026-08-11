@@ -43,7 +43,6 @@ _CONFIG_KEYS = {
     "DORIS_TEST_REPLICATION_NUM",
     "DORIS_TEST_EXPECTED_VERSION",
     "DORIS_TEST_SUITE",
-    "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE",
 }
 _DEFAULT_VALUES = {
     "DORIS_TEST_HOST": "127.0.0.1",
@@ -54,7 +53,6 @@ _DEFAULT_VALUES = {
     "DORIS_TEST_REPLICATION_NUM": "1",
     "DORIS_TEST_EXPECTED_VERSION": "",
     "DORIS_TEST_SUITE": "core",
-    "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE": "NO",
 }
 _KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _SCHEMA_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
@@ -81,7 +79,6 @@ class DorisTestSettings:
     replication_num: int
     expected_version: str | None
     suite: str
-    destructive_acknowledged: bool
 
     def pytest_environment(self, base_environment=None):
         """Return an isolated environment for the pytest subprocess."""
@@ -234,11 +231,6 @@ def resolve_settings(file_values):
     if suite not in {"core", "full"}:
         raise RunnerError("DORIS_TEST_SUITE must be either 'core' or 'full'.")
 
-    acknowledgement = values["DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE"].strip()
-    if acknowledgement not in {"YES", "NO"}:
-        raise RunnerError(
-            "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE must be exactly YES or NO."
-        )
     return DorisTestSettings(
         host=host,
         port=port,
@@ -248,7 +240,6 @@ def resolve_settings(file_values):
         replication_num=replication_num,
         expected_version=expected_version,
         suite=suite,
-        destructive_acknowledged=acknowledgement == "YES",
     )
 
 
@@ -514,13 +505,6 @@ def main(argv=None):
         settings = resolve_settings(file_values)
         password = settings.password
         _reject_parallel_pytest(arguments.pytest_args)
-        if not arguments.preflight_only and not settings.destructive_acknowledged:
-            raise RunnerError(
-                "The Functional suite creates and drops databases, tables, views, "
-                "materialized views, and (in the full suite) users and grants. Use "
-                "a dedicated test cluster, then set "
-                "DORIS_TEST_ACKNOWLEDGE_DESTRUCTIVE=YES in the config file."
-            )
 
         _warn_config_permissions(arguments.config, settings)
         _print_settings(settings)
