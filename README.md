@@ -394,22 +394,38 @@ out of scope.
 Unit tests do not require a Doris cluster:
 
 ```shell
+python -m flake8 dbt scripts test
 python -m pytest test/unit
-python -m flake8 dbt test
 ```
 
-Functional tests require a reachable Doris cluster. The defaults target
-`127.0.0.1:9030`, user `root`, schema `dbt_test`, and one replica:
+Functional tests require a reachable, dedicated Doris test cluster. Install the
+development dependencies, copy the local configuration template, and edit the
+copy:
 
 ```shell
-DORIS_TEST_HOST=127.0.0.1 \
-DORIS_TEST_PORT=9030 \
-DORIS_TEST_USER=root \
-DORIS_TEST_PASSWORD='' \
-DORIS_TEST_SCHEMA=dbt_test \
-DORIS_TEST_REPLICATION_NUM=1 \
-  python -m pytest test/functional
+cp test/doris_test.env.example test/doris_test.env
+chmod 600 test/doris_test.env
+# Edit test/doris_test.env, including the destructive-test acknowledgement.
+python scripts/run_doris_functional_tests.py --config test/doris_test.env
+# Equivalent after the default config file is created:
+make test-functional
 ```
+
+The runner validates the configuration, connects to Doris, records FE/BE
+versions, checks the live BE count against the requested replication number,
+and refuses to run if the fixed test database `cross_db_test` already exists.
+Use `--preflight-only` to perform those checks without starting pytest, or pass
+pytest selection arguments after `--`:
+
+```shell
+python scripts/run_doris_functional_tests.py --preflight-only
+python scripts/run_doris_functional_tests.py -- -k snapshot -vv
+```
+
+The tests create and drop databases, tables, views, and materialized views. The
+`full` suite also creates and drops users and executes `GRANT`/`REVOKE`; select
+it with `DORIS_TEST_SUITE=full`. Never run the suite against a production or
+shared cluster, and do not run multiple Functional sessions concurrently.
 
 ## License and upstream
 

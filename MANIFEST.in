@@ -28,4 +28,6 @@ include tox.ini
 include dev-requirements.txt
 prune docs
 recursive-include dbt/include *.sql *.yml
+recursive-include scripts *.py
 recursive-include test *.py
+include test/doris_test.env.example
