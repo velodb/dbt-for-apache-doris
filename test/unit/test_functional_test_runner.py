@@ -30,20 +30,25 @@ def settings(**overrides):
     return runner.resolve_settings(overrides)
 
 
-def version_evidence(backend_count=1):
+def version_evidence(
+    backend_count=1,
+    frontend_version="doris-4.1.3-rc01-fe",
+    backend_version=None,
+):
+    backend_version = backend_version or frontend_version
     return {
         "doris_frontends": [
             {
                 "alive": "true",
                 "host": "127.0.0.1",
-                "version": "doris-4.1.3-rc01-fe",
+                "version": frontend_version,
             }
         ],
         "doris_backends": [
             {
                 "alive": "true",
                 "host": f"127.0.0.{index + 2}",
-                "version": "doris-4.1.3-rc01-fe",
+                "version": backend_version,
             }
             for index in range(backend_count)
         ],
@@ -90,6 +95,7 @@ def test_example_configuration_is_parseable():
     assert values["DORIS_TEST_HOST"] == "127.0.0.1"
     assert values["DORIS_TEST_PASSWORD"] == ""
     assert values["DORIS_TEST_SUITE"] == "core"
+    assert "DORIS_TEST_EXPECTED_VERSION" not in values
 
 
 def test_config_parser_handles_export_quotes_hashes_and_equals(tmp_path):
@@ -116,6 +122,10 @@ def test_config_parser_handles_export_quotes_hashes_and_equals(tmp_path):
         ),
         ("DORIS_TEST_HOST\n", "expected KEY=VALUE"),
         ("DORIS_TEST_HOST='unterminated\n", "invalid quoted value"),
+        (
+            "DORIS_TEST_EXPECTED_VERSION=4.1.3\n",
+            "unknown configuration key",
+        ),
     ],
 )
 def test_config_parser_rejects_invalid_input(tmp_path, contents, message):
@@ -149,8 +159,6 @@ def test_config_parser_rejects_non_utf8_input(tmp_path):
         ("DORIS_TEST_REPLICATION_NUM", "0", "at least 1"),
         ("DORIS_TEST_SCHEMA", "mysql", "system schema"),
         ("DORIS_TEST_SCHEMA", "bad-schema", "letters, digits, and underscores"),
-        ("DORIS_TEST_EXPECTED_VERSION", "4.1", "MAJOR.MINOR.PATCH"),
-        ("DORIS_TEST_EXPECTED_VERSION", "0.0.0", "development placeholder"),
         ("DORIS_TEST_SUITE", "unknown", "core.*full"),
     ],
 )
@@ -159,7 +167,7 @@ def test_settings_validation(key, value, message):
         settings(**{key: value})
 
 
-def test_empty_expected_version_is_removed_from_pytest_environment():
+def test_pytest_environment_removes_ambient_runner_configuration():
     environment = settings().pytest_environment(
         {
             "PATH": "/bin",
@@ -179,7 +187,7 @@ def test_empty_expected_version_is_removed_from_pytest_environment():
     assert "PYTEST_PLUGINS" not in environment
 
 
-def test_version_helpers_can_load_when_started_outside_repository(monkeypatch):
+def test_version_reader_can_load_when_started_outside_repository(monkeypatch):
     project_root = str(runner.PROJECT_ROOT)
     monkeypatch.setattr(
         runner.sys,
@@ -187,30 +195,28 @@ def test_version_helpers_can_load_when_started_outside_repository(monkeypatch):
         [path for path in runner.sys.path if path != project_root],
     )
 
-    read_versions, enforce_version = runner._load_version_helpers()
+    read_versions = runner._load_version_reader()
 
     assert runner.sys.path[0] == project_root
     assert callable(read_versions)
-    assert callable(enforce_version)
 
 
 def test_preflight_checks_connection_versions_replication_and_fixed_database():
     connection = FakeConnection()
     connect_calls = []
-    enforced = []
 
     def connect(**kwargs):
         connect_calls.append(kwargs)
         return connection
 
-    def enforce(evidence, expected):
-        enforced.append((evidence, expected))
-
     summary = runner.preflight_connection(
-        settings(DORIS_TEST_EXPECTED_VERSION="4.1.3"),
+        settings(),
         connect=connect,
-        read_versions=lambda _: version_evidence(backend_count=2),
-        enforce_version=enforce,
+        read_versions=lambda _: version_evidence(
+            backend_count=2,
+            frontend_version="doris-0.0.0-source123",
+            backend_version="doris-2.1.4-release",
+        ),
     )
 
     assert connect_calls == [
@@ -222,10 +228,12 @@ def test_preflight_checks_connection_versions_replication_and_fixed_database():
             "connection_timeout": 10,
         }
     ]
-    assert enforced[0][1] == "4.1.3"
     assert summary.frontend_count == 1
     assert summary.backend_count == 2
-    assert summary.versions == ("doris-4.1.3-rc01-fe",)
+    assert summary.versions == (
+        "doris-0.0.0-source123",
+        "doris-2.1.4-release",
+    )
     assert connection.cursor_instance.executed == [
         ("select 1", None),
         (
@@ -246,7 +254,6 @@ def test_preflight_rejects_existing_fixed_database_and_closes_connection():
             settings(),
             connect=lambda **_: connection,
             read_versions=lambda _: version_evidence(),
-            enforce_version=lambda *_: None,
         )
 
     assert connection.closed is True
@@ -260,7 +267,6 @@ def test_preflight_rejects_replication_above_live_backend_count():
             settings(DORIS_TEST_REPLICATION_NUM="2"),
             connect=lambda **_: connection,
             read_versions=lambda _: version_evidence(),
-            enforce_version=lambda *_: None,
         )
 
     assert connection.closed is True
@@ -325,16 +331,14 @@ def test_run_uses_repo_root_isolated_environment_and_returns_pytest_code(
     monkeypatch,
 ):
     monkeypatch.setenv("DORIS_TEST_HOST", "ambient-host-must-not-leak")
+    monkeypatch.setenv("DORIS_TEST_EXPECTED_VERSION", "stale-gate-must-not-leak")
     calls = []
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
         return SimpleNamespace(returncode=7)
 
-    test_settings = settings(
-        DORIS_TEST_PASSWORD="sentinel-secret",
-        DORIS_TEST_EXPECTED_VERSION="4.1.3",
-    )
+    test_settings = settings(DORIS_TEST_PASSWORD="sentinel-secret")
     return_code = runner.run_functional_tests(test_settings, ["-q"], run=run)
 
     assert return_code == 7
@@ -346,7 +350,7 @@ def test_run_uses_repo_root_isolated_environment_and_returns_pytest_code(
     assert "shell" not in kwargs
     assert kwargs["env"]["DORIS_TEST_HOST"] == "127.0.0.1"
     assert kwargs["env"]["DORIS_TEST_PASSWORD"] == "sentinel-secret"
-    assert kwargs["env"]["DORIS_TEST_EXPECTED_VERSION"] == "4.1.3"
+    assert "DORIS_TEST_EXPECTED_VERSION" not in kwargs["env"]
 
 
 def test_main_preflight_only_does_not_run_tests(

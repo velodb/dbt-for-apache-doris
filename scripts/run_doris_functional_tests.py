@@ -41,7 +41,6 @@ _CONFIG_KEYS = {
     "DORIS_TEST_PASSWORD",
     "DORIS_TEST_SCHEMA",
     "DORIS_TEST_REPLICATION_NUM",
-    "DORIS_TEST_EXPECTED_VERSION",
     "DORIS_TEST_SUITE",
 }
 _DEFAULT_VALUES = {
@@ -51,12 +50,10 @@ _DEFAULT_VALUES = {
     "DORIS_TEST_PASSWORD": "",
     "DORIS_TEST_SCHEMA": "dbt_test",
     "DORIS_TEST_REPLICATION_NUM": "1",
-    "DORIS_TEST_EXPECTED_VERSION": "",
     "DORIS_TEST_SUITE": "core",
 }
 _KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _SCHEMA_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
-_VERSION_PATTERN = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 _SYSTEM_SCHEMAS = {
     "information_schema",
     "mysql",
@@ -77,7 +74,6 @@ class DorisTestSettings:
     password: str
     schema: str
     replication_num: int
-    expected_version: str | None
     suite: str
 
     def pytest_environment(self, base_environment=None):
@@ -99,8 +95,6 @@ class DorisTestSettings:
                 "DORIS_TEST_REPLICATION_NUM": str(self.replication_num),
             }
         )
-        if self.expected_version is not None:
-            environment["DORIS_TEST_EXPECTED_VERSION"] = self.expected_version
         return environment
 
 
@@ -212,21 +206,6 @@ def resolve_settings(file_values):
         1,
     )
 
-    expected_version = values["DORIS_TEST_EXPECTED_VERSION"].strip() or None
-    if (
-        expected_version is not None
-        and _VERSION_PATTERN.fullmatch(expected_version) is None
-    ):
-        raise RunnerError(
-            "DORIS_TEST_EXPECTED_VERSION must be empty or MAJOR.MINOR.PATCH, "
-            f"got {expected_version!r}."
-        )
-    if expected_version == "0.0.0":
-        raise RunnerError(
-            "DORIS_TEST_EXPECTED_VERSION 0.0.0 is a development placeholder, "
-            "not a Doris release."
-        )
-
     suite = values["DORIS_TEST_SUITE"].strip().casefold()
     if suite not in {"core", "full"}:
         raise RunnerError("DORIS_TEST_SUITE must be either 'core' or 'full'.")
@@ -238,7 +217,6 @@ def resolve_settings(file_values):
         password=values["DORIS_TEST_PASSWORD"],
         schema=schema,
         replication_num=replication_num,
-        expected_version=expected_version,
         suite=suite,
     )
 
@@ -268,30 +246,22 @@ def _fixed_cross_database_exists(connection):
         cursor.close()
 
 
-def _load_version_helpers():
+def _load_version_reader():
     project_root = str(PROJECT_ROOT)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    from test.e2e_version_evidence import (
-        doris_cluster_versions,
-        enforce_expected_doris_version,
-    )
+    from test.e2e_version_evidence import doris_cluster_versions
 
-    return doris_cluster_versions, enforce_expected_doris_version
+    return doris_cluster_versions
 
 
-def inspect_cluster(connection, settings, read_versions=None, enforce_version=None):
+def inspect_cluster(connection, settings, read_versions=None):
     """Validate non-destructive cluster prerequisites for the suite."""
-    if read_versions is None or enforce_version is None:
-        default_reader, default_enforcer = _load_version_helpers()
-        if read_versions is None:
-            read_versions = default_reader
-        if enforce_version is None:
-            enforce_version = default_enforcer
+    if read_versions is None:
+        read_versions = _load_version_reader()
 
     try:
         evidence = read_versions(connection)
-        enforce_version(evidence, settings.expected_version)
     except RuntimeError as error:
         raise RunnerError(str(error)) from error
 
@@ -328,9 +298,7 @@ def inspect_cluster(connection, settings, read_versions=None, enforce_version=No
     )
 
 
-def preflight_connection(
-    settings, connect=None, read_versions=None, enforce_version=None
-):
+def preflight_connection(settings, connect=None, read_versions=None):
     """Connect to Doris, inspect the cluster, and always close the connection."""
     connection_errors = ()
     if connect is None:
@@ -357,7 +325,6 @@ def preflight_connection(
                 connection,
                 settings,
                 read_versions=read_versions,
-                enforce_version=enforce_version,
             )
         finally:
             connection.close()
@@ -452,7 +419,6 @@ def _print_settings(settings):
     print(f"  password: {'set (hidden)' if settings.password else 'empty'}")
     print(f"  test schema namespace: {settings.schema}")
     print(f"  replication number: {settings.replication_num}")
-    print(f"  expected Doris version: {settings.expected_version or 'not enforced'}")
     print(f"  suite: {settings.suite}")
 
 

@@ -49,8 +49,9 @@ test-schema and process cleanup. Those results bind clean commit
 `7f6d9701140188f347e9f68a25ef9013551e4e48`; the focused Async MV column was
 run separately on clean commit `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`.
 The final runs recorded identical FE/BE versions with `Alive=true` and zero
-remaining test databases or helper relations. The gate rejects the `0.0.0`
-development placeholder. Every per-version JSON record contains a
+remaining test databases or helper relations. That historical evidence gate
+rejected the `0.0.0` development placeholder. Every per-version JSON record
+contains a
 `doris_version_gate` object whose `expected_release` matches the matrix row,
 whose `reported_build` matches the exact FE/BE Version above, and whose `status`
 is `passed`.
@@ -93,8 +94,9 @@ Those package digests bind the package audit to implementation commit
 promise that a later documentation-only or release build will have identical
 archive bytes.
 
-The exact-version evidence gate rejects `0.0.0` and requires every live FE and
-BE to report one identical complete Version string for the requested release.
+The current Functional runner records the complete Version string reported by
+each live FE and BE, but it does not compare those strings with a configured
+release or block the suite based on them.
 
 Functional-test database names now start with a prefix of at most 14 characters.
 The longest known generated database name is 62 characters, and the
@@ -417,9 +419,10 @@ make test-functional
 The runner validates the configuration, connects to Doris, records FE/BE
 versions, checks the live BE count against the requested replication number,
 and refuses to run if the fixed test database `cross_db_test` already exists.
-When the exact-release setting is empty, source builds reported as
-`doris-0.0.0-<hex git sha>` can run the Async MV tests; this does not turn
-`0.0.0` into formal release evidence.
+It does not require an expected-release setting: release and source builds run
+the same selected tests, and the test results determine whether the exercised
+paths work. A source-build result is development evidence, not formal release
+compatibility evidence.
 Use `--preflight-only` to perform those checks without starting pytest, or pass
 pytest selection arguments after `--`:
 
