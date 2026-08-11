@@ -409,14 +409,14 @@ development dependencies, then edit the tracked local defaults in
 
 ```shell
 # The committed defaults target 127.0.0.1:9030 as root with an empty password.
-make test-functional
+make test
 ```
 
 Keep the committed password empty. For credentials or another private local
 configuration, store the file outside the repository and run:
 
 ```shell
-make test-functional DORIS_TEST_CONFIG=/secure/path/doris_test.env
+make test DORIS_TEST_CONFIG=/secure/path/doris_test.env
 ```
 
 The runner validates the configuration, connects to Doris, records FE/BE

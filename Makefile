@@ -1,6 +1,6 @@
 PYTHON ?= python3
 
-.PHONY: install install-dev lint test test-unit test-functional build check-dist clean
+.PHONY: install install-dev lint test test-unit build check-dist clean
 
 DORIS_TEST_CONFIG ?= test/doris_test.env
 
@@ -14,13 +14,11 @@ install-dev:
 lint:
 	$(PYTHON) -m flake8 dbt scripts test
 
-test: test-unit
+test:
+	$(PYTHON) scripts/run_doris_functional_tests.py --config "$(DORIS_TEST_CONFIG)"
 
 test-unit:
 	$(PYTHON) -m pytest test/unit
-
-test-functional:
-	$(PYTHON) scripts/run_doris_functional_tests.py --config "$(DORIS_TEST_CONFIG)"
 
 build:
 	$(PYTHON) -m build
