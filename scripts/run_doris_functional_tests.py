@@ -126,8 +126,8 @@ def load_config_file(path):
         lines = path.read_text(encoding="utf-8").splitlines()
     except FileNotFoundError as error:
         raise RunnerError(
-            f"Configuration file not found: {path}. Copy "
-            "test/doris_test.env.example to test/doris_test.env first."
+            f"Configuration file not found: {path}. Restore test/doris_test.env "
+            "or pass an existing file with --config."
         ) from error
     except UnicodeDecodeError as error:
         raise RunnerError(f"Configuration file must be valid UTF-8: {path}.") from error

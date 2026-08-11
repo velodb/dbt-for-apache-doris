@@ -89,8 +89,8 @@ class FakeConnection:
         self.closed = True
 
 
-def test_example_configuration_is_parseable():
-    values = runner.load_config_file(PROJECT_ROOT / "test/doris_test.env.example")
+def test_default_configuration_is_parseable_and_contains_no_password():
+    values = runner.load_config_file(PROJECT_ROOT / "test/doris_test.env")
 
     assert values["DORIS_TEST_HOST"] == "127.0.0.1"
     assert values["DORIS_TEST_PASSWORD"] == ""
@@ -140,8 +140,8 @@ def test_config_parser_rejects_invalid_input(tmp_path, contents, message):
         runner.load_config_file(config)
 
 
-def test_missing_config_has_copy_instruction(tmp_path):
-    with pytest.raises(runner.RunnerError, match="doris_test.env.example"):
+def test_missing_config_has_restore_instruction(tmp_path):
+    with pytest.raises(runner.RunnerError, match="Restore test/doris_test.env"):
         runner.load_config_file(tmp_path / "missing.env")
 
 

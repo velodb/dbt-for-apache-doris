@@ -59,7 +59,7 @@ def test_functional_runner_is_included_in_source_distributions():
     manifest = (PROJECT_ROOT / "MANIFEST.in").read_text()
 
     assert "recursive-include scripts *.py" in manifest
-    assert "include test/doris_test.env.example" in manifest
+    assert "include test/doris_test.env" in manifest
 
 
 def test_runtime_and_development_connector_floors_match():

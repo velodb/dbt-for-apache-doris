@@ -404,16 +404,19 @@ python -m pytest test/unit
 ```
 
 Functional tests require a reachable, dedicated Doris test cluster. Install the
-development dependencies, copy the local configuration template, and edit the
-copy:
+development dependencies, then edit the tracked local defaults in
+`test/doris_test.env` when necessary:
 
 ```shell
-cp test/doris_test.env.example test/doris_test.env
-chmod 600 test/doris_test.env
-# Edit test/doris_test.env with the dedicated test-cluster connection.
-python scripts/run_doris_functional_tests.py --config test/doris_test.env
-# Equivalent after the default config file is created:
+# The committed defaults target 127.0.0.1:9030 as root with an empty password.
 make test-functional
+```
+
+Keep the committed password empty. For credentials or another private local
+configuration, store the file outside the repository and run:
+
+```shell
+make test-functional DORIS_TEST_CONFIG=/secure/path/doris_test.env
 ```
 
 The runner validates the configuration, connects to Doris, records FE/BE

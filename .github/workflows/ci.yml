@@ -61,7 +61,7 @@ jobs:
           sdist = next(Path("dist").glob("*.tar.gz"))
           required_suffixes = {
               "scripts/run_doris_functional_tests.py",
-              "test/doris_test.env.example",
+              "test/doris_test.env",
           }
           with tarfile.open(sdist) as archive:
               members = {member.name for member in archive.getmembers()}
