@@ -71,8 +71,7 @@ def test_materializations_are_adapter_scoped():
     """Materializations must be registered for the doris adapter, not `default`.
 
     A `default` materialization is global: installed alongside another adapter it
-    would take over that adapter's models too. `partition` shipped as `default`
-    for exactly this reason.
+    would take over that adapter's models too.
     """
     pattern = re.compile(r"{%-?\s*materialization\s+(\w+)\s*,\s*([^%]*?)-?%}")
     found = []

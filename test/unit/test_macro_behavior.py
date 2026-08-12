@@ -35,7 +35,6 @@ from .macro_harness import (
     FakeColumn,
     FakeConfig,
     FakeRelation,
-    FakeRow,
     MacroRunner,
 )
 
@@ -228,30 +227,6 @@ class TestSingleStatementDDL:
         assert runner.statements == [], (
             f"{macro} must return SQL, not execute statements of its own: " f"{runner.statements}"
         )
-
-    def test_replace_partitions_runs_one_statement_per_partition(self):
-        """Each ALTER ... REPLACE PARTITION is its own statement.
-
-        These were emitted as one semicolon-separated blob. The replaces
-        succeeded, so the error surfaced later and left the temp table behind.
-        """
-        runner = MacroRunner(
-            "materializations/partition/replace.sql",
-            "materializations/partition/helpers.sql",
-        )
-        partitions = [FakeRow({"dt": "20260101"}), FakeRow({"dt": "20260102"})]
-        replaced = runner.render("doris__replace_partitions", FakeRelation(), partitions)
-
-        assert replaced == 2, "should report how many partitions were replaced"
-        assert len(runner.statements) == 2
-        for statement in runner.statements:
-            assert (
-                statement_count(statement.sql) == 1
-            ), f"partition replace must be one statement: {statement.sql}"
-            assert "replace partition" in statement.sql
-        # Distinct statement names, or dbt's result store overwrites entries.
-        names = [statement.name for statement in runner.statements]
-        assert len(set(names)) == len(names), f"statement names collide: {names}"
 
     def test_unique_table_defaults_to_merge_on_write(self):
         sql = table_runner().sql(

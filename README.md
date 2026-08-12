@@ -22,13 +22,11 @@ through the Doris MySQL protocol. It is maintained by the VeloDB community.
 
 ## Supported capabilities
 
-Status: ✅ Supported · ⚠️ Limited · 🧪 Experimental · ❌ Not supported
+Status: ✅ Supported · ❌ Not supported
 
 Feature status and database-version compatibility are separate contracts.
-`Supported` means the documented scope is implemented and tested. `Limited`
-means the capability is usable within a deliberately narrow or incompletely
-conformance-tested scope. An explicit platform boundary does not by itself make
-a capability experimental.
+`Supported` means the documented scope is implemented and tested; explicit
+platform boundaries are described alongside each capability.
 
 ### Materializations
 
@@ -38,7 +36,6 @@ a capability experimental.
 | View | ✅ Supported | Standard lifecycle, contracts, docs, grants, and hooks; relation-type switching is not zero-downtime |
 | Incremental | ✅ Supported | Four strategies and every `on_schema_change` mode; boundaries are listed below |
 | Snapshot | ✅ Supported | `check`/`timestamp`, hard-delete modes, schema evolution, atomic replacement, and recovery; same-target runs must be serialized by the scheduler |
-| Partition (legacy) | ⚠️ Limited | Compatibility materialization for single-column integer RANGE partitions using `p<value>` names; multi-partition runs are not batch-atomic. Prefer incremental `insert_overwrite` for new models |
 | Materialized view | ✅ Supported | Standard dbt `materialized_view`, implemented with Doris Async MV; build/refresh lifecycle, task waiting, configuration changes, atomic replacement, and recovery. Same-target dbt runs must be serialized by the scheduler |
 | Seed | ✅ Supported | CSV loading, type inference, `column_types`, and `ref` |
 | Ephemeral | ✅ Supported | Compiled and inlined by dbt Core |
@@ -52,7 +49,7 @@ a capability experimental.
 | dbt Unit tests | ✅ Supported | Inline-row and CSV fixtures, case-insensitive columns, invalid-input validation, quoted reserved words, Doris-adapted data-type fixtures, and non-truncating VARCHAR fixtures |
 | Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; not database PK/NOT NULL constraints |
 | Persisted docs | ✅ Supported | Relation and column comments for Table, View, Incremental, Snapshot, Seed, and Async MV; updating View comments or comment text containing both quote delimiters may require recreation/full refresh |
-| Grants | ✅ Supported | Reconciles supported Doris table privileges for `user` and `user@host` principals on Table, View, Incremental, Seed, Snapshot, and Async MV; roles and legacy Partition are not reconciled |
+| Grants | ✅ Supported | Reconciles supported Doris table privileges for `user` and `user@host` principals on Table, View, Incremental, Seed, Snapshot, and Async MV; role principals are not reconciled |
 | Hooks | ✅ Supported | Pre-hooks and post-hooks across adapter materializations; Doris does not provide transactional rollback for hook side effects |
 | Internal metadata and dbt docs catalog | ✅ Supported | Relation discovery and docs catalog for Doris databases, tables, views, columns, comments, and Async MVs |
 | Cross-database sources | ✅ Supported | Sources in other Doris databases, including database-only source definitions; External Catalog three-part names are not supported |
