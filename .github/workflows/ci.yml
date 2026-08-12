@@ -34,7 +34,7 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e . pytest flake8
       - name: Lint
-        run: python -m flake8 dbt test
+        run: python -m flake8 dbt scripts test
       - name: Unit tests
         run: python -m pytest test/unit
 
@@ -54,6 +54,27 @@ jobs:
           python -m pip install build twine
           python -m build
           python -m twine check dist/*
+          python - <<'PY'
+          from pathlib import Path
+          import tarfile
+
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          required_suffixes = {
+              "scripts/run_doris_functional_tests.py",
+              "test/doris_test.env",
+          }
+          with tarfile.open(sdist) as archive:
+              members = {member.name for member in archive.getmembers()}
+          missing = {
+              suffix
+              for suffix in required_suffixes
+              if not any(name.endswith("/" + suffix) for name in members)
+          }
+          if missing:
+              raise SystemExit(
+                  "source distribution is missing: " + ", ".join(sorted(missing))
+              )
+          PY
 
   ci-success:
     name: CI Success

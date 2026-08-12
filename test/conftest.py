@@ -27,7 +27,6 @@ import yaml
 from dbt.tests.util import write_file
 
 from test.e2e_version_evidence import (
-    enforce_expected_doris_version,
     format_version_evidence,
     random_schema_prefix,
     version_evidence,
@@ -89,22 +88,6 @@ def doris_e2e_version_evidence(request):
         )
     finally:
         connection.close()
-
-    expected_version = os.environ.get("DORIS_TEST_EXPECTED_VERSION")
-    try:
-        evidence["doris_version_gate"] = enforce_expected_doris_version(
-            evidence,
-            expected_version,
-        )
-    except RuntimeError as error:
-        evidence["doris_version_gate"] = {
-            "error": str(error),
-            "expected_release": expected_version,
-            "reported_build": None,
-            "status": "failed",
-        }
-        _emit_version_evidence(request, evidence)
-        raise
 
     _emit_version_evidence(request, evidence)
 

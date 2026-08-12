@@ -7,10 +7,10 @@ A dbt adapter for VeloDB and Apache Doris.
 | Component | Development or test baseline |
 | --- | --- |
 | dbt Core | 1.12.x; Microbatch requires 1.12.x; the historical release matrix ran on 1.12.0 |
-| Apache Doris | 2.1.5+ expected runtime minimum; exact historical release evidence is listed below and in the Incremental guide |
+| Apache Doris | Async MV Adapter runtime gate: 2.x >= 2.1.5, 3.x except 3.0.0, and 4.x+; identifiable `doris-0.0.0-<git sha>` source builds are accepted for development testing |
 | Historical Doris release E2E matrix | 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 all passed on the recorded CTAS-snapshot, durable-marker, and pre-model-ordering baseline |
 | Historical mixed-cluster Functional run | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed, but not official-release compatibility evidence |
-| Doris Async MV gate unit tests | Mocked version strings for 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
+| Doris Async MV gate unit tests | Mocked source-build identity plus release versions 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 |
 | Python | 3.10 or newer; final matrix ran on 3.12.13 |
 | Database protocol | Doris MySQL protocol |
 
@@ -49,8 +49,9 @@ test-schema and process cleanup. Those results bind clean commit
 `7f6d9701140188f347e9f68a25ef9013551e4e48`; the focused Async MV column was
 run separately on clean commit `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`.
 The final runs recorded identical FE/BE versions with `Alive=true` and zero
-remaining test databases or helper relations. The gate rejects the `0.0.0`
-development placeholder. Every per-version JSON record contains a
+remaining test databases or helper relations. That historical evidence gate
+rejected the `0.0.0` development placeholder. Every per-version JSON record
+contains a
 `doris_version_gate` object whose `expected_release` matches the matrix row,
 whose `reported_build` matches the exact FE/BE Version above, and whose `status`
 is `passed`.
@@ -93,8 +94,9 @@ Those package digests bind the package audit to implementation commit
 promise that a later documentation-only or release build will have identical
 archive bytes.
 
-The exact-version evidence gate rejects `0.0.0` and requires every live FE and
-BE to report one identical complete Version string for the requested release.
+The current Functional runner records the complete Version string reported by
+each live FE and BE, but it does not compare those strings with a configured
+release or block the suite based on them.
 
 Functional-test database names now start with a prefix of at most 14 characters.
 The longest known generated database name is 62 characters, and the
@@ -369,21 +371,24 @@ Asynchronous-MV version evidence is:
 | --- | --- | --- |
 | Historical full Functional run on a mixed cluster | FE `doris-4.1.2-rc01-4536b29f712`; BE `doris-0.0.0-0a5ad292e3f`; 87 passed | The implemented paths worked on that exact mixed development cluster; this is not official-release compatibility evidence |
 | Focused Async MV E2E matrix | Clean commit `f5e30c64ef7eb8320cf359c3d96cf62b595faf00`, `dirty=false`; the same 21 MV tests passed without skips on 2.1.11, 3.0.8, 3.1.4, 4.0.7, and 4.1.3 | Async MV creation, refresh policy, task waiting, configuration change, rollback, docs, custom schema/alias, and relation-type switching passed on those exact builds |
-| Unit tests with mocked `SHOW FRONTENDS` rows | 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 | Version parsing and gate decisions only; no Doris feature compatibility |
+| Unit tests with mocked `SHOW FRONTENDS` rows | `doris-0.0.0-<git sha>`, 2.1.5, 2.1.10, 3.0.1, 3.1.0, and 4.1.2 | Version parsing and gate decisions only; no Doris feature compatibility |
 
 Before managing an asynchronous MV, the adapter prefers the connected and
 Master FE versions from `SHOW FRONTENDS`; if neither role can be identified, it
 validates the first returned row. An unparsable or unsupported selected FE is
-rejected. The current code gate accepts 2.x versions at 2.1.5 or newer, every
-3.x version except 3.0.0, and major version 4 or newer.
+rejected. The current code gate accepts identifiable source builds reported as
+`doris-0.0.0-<hex git sha>`, 2.x releases at 2.1.5 or newer, every 3.x release
+except 3.0.0, and major version 4 or newer. A bare `0.0.0` or a development
+version without a hexadecimal Git revision remains rejected.
 
 Those boundaries are hard-coded runtime conditions, not results from the
 official-release E2E matrix. In particular, this repository has not established
 through live-cluster testing that 2.1.5 is the exact minimum or that 3.0.0 is
-incompatible. Gate acceptance and the historical mixed-cluster run are therefore
-not compatibility guarantees. Before production use, require a completed matrix
-row for the exact Doris release or run the same evidence procedure against that
-release.
+incompatible. Source-build acceptance lets development tests exercise the actual
+cluster capability; it is not release compatibility evidence. Gate acceptance
+and the historical mixed-cluster run are therefore not compatibility guarantees.
+Before production use, require a completed matrix row for the exact Doris release
+or run the same evidence procedure against that release.
 
 Only Doris asynchronous materialized views are managed. Synchronous
 materialized views (rollups) have a different lifecycle and remain explicitly
@@ -394,22 +399,46 @@ out of scope.
 Unit tests do not require a Doris cluster:
 
 ```shell
+python -m flake8 dbt scripts test
 python -m pytest test/unit
-python -m flake8 dbt test
 ```
 
-Functional tests require a reachable Doris cluster. The defaults target
-`127.0.0.1:9030`, user `root`, schema `dbt_test`, and one replica:
+Functional tests require a reachable, dedicated Doris test cluster. Install the
+development dependencies, then edit the tracked local defaults in
+`test/doris_test.env` when necessary:
 
 ```shell
-DORIS_TEST_HOST=127.0.0.1 \
-DORIS_TEST_PORT=9030 \
-DORIS_TEST_USER=root \
-DORIS_TEST_PASSWORD='' \
-DORIS_TEST_SCHEMA=dbt_test \
-DORIS_TEST_REPLICATION_NUM=1 \
-  python -m pytest test/functional
+# The committed defaults target 127.0.0.1:9030 as root with an empty password.
+make test
 ```
+
+Keep the committed password empty. For credentials or another private local
+configuration, store the file outside the repository and run:
+
+```shell
+make test DORIS_TEST_CONFIG=/secure/path/doris_test.env
+```
+
+The runner validates the configuration, connects to Doris, records FE/BE
+versions, checks the live BE count against the requested replication number,
+and refuses to run if the fixed test database `cross_db_test` already exists.
+It does not require an expected-release setting: release and source builds run
+the same selected tests, and the test results determine whether the exercised
+paths work. A source-build result is development evidence, not formal release
+compatibility evidence.
+Use `--preflight-only` to perform those checks without starting pytest, or pass
+pytest selection arguments after `--`:
+
+```shell
+python scripts/run_doris_functional_tests.py --preflight-only
+python scripts/run_doris_functional_tests.py -- -k snapshot -vv
+```
+
+The tests create and drop databases, tables, views, materialized views, and
+temporary users, and they execute `GRANT`/`REVOKE`. The configured test account
+must have permission to perform those operations. Never run the suite against a
+production or shared cluster, and do not run multiple Functional sessions
+concurrently.
 
 ## License and upstream
 

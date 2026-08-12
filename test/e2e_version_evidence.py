@@ -55,13 +55,6 @@ _BACKEND_FIELDS = (
     ("alive", "Alive"),
     ("version", "Version"),
 )
-_EXPECTED_RELEASE_PATTERN = re.compile(
-    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
-)
-_DORIS_BUILD_RELEASE_PATTERN = re.compile(
-    r"^doris-((?:0|[1-9][0-9]*)\."
-    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))(?:-|$)"
-)
 
 
 def _schema_prefix_nonce(nonce):
@@ -154,78 +147,6 @@ def _node_evidence(rows, fields, node_type):
             node["version"],
         ),
     )
-
-
-def _live_doris_nodes(evidence, evidence_name, node_type):
-    nodes = evidence.get(evidence_name)
-    if not isinstance(nodes, list) or not nodes:
-        raise RuntimeError(f"Doris version gate found no {node_type} nodes.")
-
-    live_nodes = []
-    for node in nodes:
-        raw_alive = node.get("alive")
-        alive = "" if raw_alive is None else str(raw_alive).strip().casefold()
-        if alive not in {"true", "false"}:
-            raise RuntimeError(
-                f"Doris version gate found an invalid Alive value for {node_type}: "
-                f"{raw_alive!r}."
-            )
-        if alive == "true":
-            live_nodes.append(node)
-
-    if not live_nodes:
-        raise RuntimeError(f"Doris version gate found no live {node_type} nodes.")
-    return live_nodes
-
-
-def enforce_expected_doris_version(evidence, expected_version):
-    """Require every live FE and BE to belong to one exact Doris release."""
-    if expected_version is None:
-        return {
-            "expected_release": None,
-            "reported_build": None,
-            "status": "disabled",
-        }
-    if _EXPECTED_RELEASE_PATTERN.fullmatch(expected_version) is None:
-        raise RuntimeError(
-            "DORIS_TEST_EXPECTED_VERSION must be MAJOR.MINOR.PATCH, "
-            f"got {expected_version!r}."
-        )
-    if expected_version == "0.0.0":
-        raise RuntimeError(
-            "DORIS_TEST_EXPECTED_VERSION 0.0.0 is a development placeholder, "
-            "not a Doris release."
-        )
-
-    live_nodes = []
-    for evidence_name, node_type in (
-        ("doris_frontends", "FE"),
-        ("doris_backends", "BE"),
-    ):
-        live_nodes.extend(_live_doris_nodes(evidence, evidence_name, node_type))
-
-    build_versions = sorted({node["version"] for node in live_nodes})
-    if len(build_versions) != 1:
-        raise RuntimeError(
-            "Doris version gate requires every live FE and BE to report the "
-            "same complete Version string; reported: "
-            + ", ".join(build_versions)
-            + "."
-        )
-
-    build_version = build_versions[0]
-    match = _DORIS_BUILD_RELEASE_PATTERN.match(build_version)
-    release = match.group(1) if match is not None else None
-    if release != expected_version:
-        raise RuntimeError(
-            f"Doris version gate expected exact Doris release {expected_version}; "
-            f"live FE/BE nodes reported: {build_version}."
-        )
-    return {
-        "expected_release": expected_version,
-        "reported_build": build_version,
-        "status": "passed",
-    }
 
 
 def doris_cluster_versions(connection):

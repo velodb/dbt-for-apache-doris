@@ -52,6 +52,9 @@ from dbt.adapters.doris.doris_column_item import DorisColumnItem
 _DORIS_VERSION = re.compile(
     r"(?:^|doris-)(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)"
 )
+_DORIS_DEVELOPMENT_VERSION = re.compile(
+    r"^doris-0\.0\.0-[0-9a-f]{7,64}$"
+)
 
 
 @dataclass
@@ -66,7 +69,7 @@ class DorisMaterializedViewAdapterResponse(AdapterResponse):
 def _validate_doris_materialized_view_version(
         frontends_table: agate.Table,
 ) -> None:
-    """Reject Doris releases missing the Async MV atomic-replace contract."""
+    """Validate release gates while allowing identifiable source builds."""
     if "Version" not in frontends_table.column_names or not frontends_table.rows:
         raise dbt.exceptions.DbtRuntimeError(
             "Could not determine the connected Doris FE version from "
@@ -102,7 +105,8 @@ def _validate_doris_materialized_view_version(
             for component in ("major", "minor", "patch")
         )
         supported = (
-            (version[0] == 2 and version >= (2, 1, 5))
+            _DORIS_DEVELOPMENT_VERSION.fullmatch(version_text) is not None
+            or (version[0] == 2 and version >= (2, 1, 5))
             or (
                 version[0] == 3
                 and (version[1] >= 1 or version[2] >= 1)
@@ -113,9 +117,10 @@ def _validate_doris_materialized_view_version(
             raise dbt.exceptions.DbtRuntimeError(
                 f"Doris FE version {version_text} does not pass the adapter's "
                 "current asynchronous-materialized-view version gate. The "
-                "gate accepts Doris 2.x >= 2.1.5, Doris 3.x except 3.0.0, or "
-                "Doris major version >= 4. These gate boundaries are runtime "
-                "conditions, not a live-cluster compatibility matrix."
+                "gate accepts identifiable Doris source builds reported as "
+                "doris-0.0.0-<git sha>, Doris 2.x >= 2.1.5, Doris 3.x except "
+                "3.0.0, or Doris major version >= 4. These gate boundaries are "
+                "runtime conditions, not a live-cluster compatibility matrix."
             )
 
 
