@@ -1,6 +1,7 @@
 # dbt for Apache Doris
 
 [![CI](https://github.com/velodb/dbt-for-apache-doris/actions/workflows/ci.yml/badge.svg)](https://github.com/velodb/dbt-for-apache-doris/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/dbt-for-apache-doris)](https://pypi.org/project/dbt-for-apache-doris/)
 ![Python](https://img.shields.io/badge/Python-%3E%3D3.10-blue)
 ![dbt Core](https://img.shields.io/badge/dbt--core-1.12.x-orange)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](https://github.com/velodb/dbt-for-apache-doris/blob/main/LICENSE)
@@ -9,13 +10,9 @@
 Apache Doris through the Doris MySQL protocol. It is maintained by the VeloDB
 community.
 
-> [!IMPORTANT]
-> This adapter is **Beta**. CI covers lint, Unit tests, and package validation,
-> but not a live Doris cluster. Current-release compatibility and VeloDB
-> verification are pending.
-
 **[Installation](#installation)** · **[Quickstart](#quickstart)** ·
 **[Compatibility](#compatibility)** ·
+**[PyPI](https://pypi.org/project/dbt-for-apache-doris/)** ·
 **[dbt docs](https://docs.getdbt.com/)** ·
 **[Doris docs](https://doris.apache.org/docs/)** ·
 **[Issues](https://github.com/velodb/dbt-for-apache-doris/issues)** ·
@@ -63,12 +60,12 @@ platform boundaries are described alongside each capability.
 | Python | `>=3.10` | Unit CI covers 3.10 and 3.14; the distribution-build job uses 3.12 |
 | dbt Core | `>=1.12,<1.13` | Declared lower bound is 1.12.0; Python dbt Core v1 only. Fusion/v2 compatibility is not claimed |
 | MySQL connector | `>=8.0.33` | Installed automatically with the adapter |
-| Apache Doris | No package-wide minimum has been declared | Historical exact-release evidence exists, but the current release-candidate SHA still needs a complete live matrix |
+| Apache Doris | No package-wide minimum is declared | Validate the adapter against the Doris release and topology used in production |
 | Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate is not a whole-adapter compatibility guarantee. Identifiable source builds are accepted for development testing only |
-| VeloDB | No release range has been declared | Release-specific live-cluster verification is pending |
+| VeloDB | No release range is declared | Validate the adapter against the VeloDB release and topology used in production |
 
-Before production use, run Functional tests against your exact release and
-topology. Historical results are not a current-release compatibility promise.
+Before production use, validate the adapter against your exact database release
+and deployment topology.
 
 ## Installation
 
@@ -80,11 +77,6 @@ source .venv/bin/activate
 python -m pip install "dbt-for-apache-doris==1.1.0"
 dbt --version
 ```
-
-> [!WARNING]
-> The separate [`dbt-doris==1.0.0` distribution on
-> PyPI](https://pypi.org/project/dbt-doris/1.0.0/) does not contain the code
-> from this repository. Install `dbt-for-apache-doris` as shown above.
 
 On Windows, create the environment with `py -m venv .venv`, activate it using
 `.venv\Scripts\Activate.ps1`, and run the same `pip install` command.
@@ -164,8 +156,7 @@ On Windows PowerShell, set the password with
 | `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; hour/day/month/year windows; static or dynamic partitions; batches run serially |
 
 Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses
-`append`. `delete+insert`, partial-column merge, and `incremental_predicates`
-are rejected.
+`append`.
 
 ### Materialized views
 
@@ -191,14 +182,7 @@ wait timeout does not cancel a submitted Doris task.
 
 ## Known limitations
 
-- Microbatch execution is serial.
-- Do not run multiple dbt invocations against the same Snapshot target concurrently;
-  serialize overlapping production jobs in the scheduler.
-- Serialize overlapping dbt runs against the same MV target; a dbt wait timeout
-  does not cancel the submitted Doris task.
-- Ordinary `table` models create Duplicate Key tables. Aggregate Key modeling,
-  secondary indexes, and a complete Doris table abstraction are not implemented.
-- `delete+insert`, partial-column merge, and `incremental_predicates` are not
+- Aggregate Key table modeling and secondary-index configuration are not
   supported.
 - A complete External Catalog namespace is unsupported.
 - SSL configuration, timeout/retry, multi-FE failover, server-side cancellation,
