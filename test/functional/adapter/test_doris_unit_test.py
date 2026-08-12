@@ -18,9 +18,22 @@
 # specific language governing permissions and limitations
 # under the License.
 
-"""Functional test for a user-authored dbt unit test on Doris."""
+"""Functional coverage for user-authored dbt unit tests on Doris."""
 
 import pytest
+from dbt.tests.adapter.unit_testing.test_case_insensitivity import (
+    BaseUnitTestCaseInsensivity,
+)
+from dbt.tests.adapter.unit_testing.test_invalid_input import (
+    BaseUnitTestInvalidInput,
+)
+from dbt.tests.adapter.unit_testing.test_quoted_reserved_word_column_names import (
+    BaseUnitTestQuotedReservedWordColumnNames,
+)
+from dbt.tests.adapter.unit_testing.test_types import (
+    BaseUnitTestingTypes,
+    BaseUnitTestingVarcharFixtureNoTruncation,
+)
 from dbt.tests.util import run_dbt
 
 
@@ -50,7 +63,23 @@ unit_tests:
 """
 
 
-class TestDorisUserUnitTest:
+class DorisUnitTesting:
+    """Apply the configured replica count to dbt's temporary unit-test tables."""
+
+    @pytest.fixture(autouse=True)
+    def configure_unit_test_replication(
+        self,
+        project,
+        doris_test_replication_num,
+    ):
+        project.run_sql(
+            f"alter database `{project.test_schema}` set properties "
+            f'("replication_allocation" = "tag.location.default: '
+            f'{doris_test_replication_num}")'
+        )
+
+
+class TestDorisUserUnitTest(DorisUnitTesting):
     @pytest.fixture(scope="class")
     def models(self):
         return {
@@ -63,13 +92,59 @@ class TestDorisUserUnitTest:
         build_results = run_dbt(["run"])
         assert len(build_results) == 2
 
-        project.run_sql(
-            f"alter database `{project.test_schema}` set properties "
-            '("replication_allocation" = "tag.location.default: 1")'
-        )
-
         unit_test_results = run_dbt(
             ["test", "--select", "test_type:unit"]
         )
         assert len(unit_test_results) == 1
         assert unit_test_results[0].status == "pass"
+
+
+class TestDorisUnitTestCaseInsensitivity(
+    DorisUnitTesting,
+    BaseUnitTestCaseInsensivity,
+):
+    pass
+
+
+class TestDorisUnitTestInvalidInput(
+    DorisUnitTesting,
+    BaseUnitTestInvalidInput,
+):
+    pass
+
+
+class TestDorisUnitTestQuotedReservedWordColumnNames(
+    DorisUnitTesting,
+    BaseUnitTestQuotedReservedWordColumnNames,
+):
+    pass
+
+
+class TestDorisUnitTestingTypes(
+    DorisUnitTesting,
+    BaseUnitTestingTypes,
+):
+    @pytest.fixture
+    def data_types(self):
+        # The upstream fixture uses PostgreSQL-only TIMESTAMPTZ and :: casts.
+        # Exercise the same scalar paths with expressions accepted by Doris.
+        return [
+            ["1", "1"],
+            ["'1'", "1"],
+            ["2.5", "2.5"],
+            ["'string value'", "string value"],
+            ["true", "true"],
+            ["DATE '2020-01-02'", "2020-01-02"],
+            [
+                "TIMESTAMP '2013-11-03 00:00:00-0'",
+                "2013-11-03 00:00:00-0",
+            ],
+            ["cast('7.77' as decimal(10, 2))", "7.77"],
+        ]
+
+
+class TestDorisUnitTestingVarcharFixtureNoTruncation(
+    DorisUnitTesting,
+    BaseUnitTestingVarcharFixtureNoTruncation,
+):
+    pass
