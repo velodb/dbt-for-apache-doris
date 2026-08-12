@@ -927,8 +927,8 @@ select 1 as id, 'original' as value
 
 
 class TestDorisIncrementalDefaultStrategy:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def models(cls):
         return {
             "incremental_default_append.sql": INCREMENTAL_DEFAULT_APPEND_SQL,
@@ -1493,8 +1493,8 @@ class TestDorisIncrementalRejectsLegacyOverwriteUniqueKey:
 
 
 class TestDorisIncrementalTargetPreflight:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def models(cls):
         return {
             "incremental_target_guard.sql": INCREMENTAL_TARGET_GUARD_SQL,
@@ -1763,8 +1763,8 @@ class TestDorisIncrementalGrantPreflight:
 
 
 class TestDorisIncrementalHookFailures:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def models(cls):
         return {
             "incremental_hook_failure.sql": INCREMENTAL_HOOK_FAILURE_SQL,
@@ -2357,8 +2357,8 @@ class TestDorisIncrementalCaseOnlySchemaChange:
 
 
 class TestDorisIncrementalSchemaChangeRetry:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def models(cls):
         return {
             "incremental_schema_change_retry.sql": (
@@ -2770,8 +2770,8 @@ class TestDorisIncrementalBackupRecovery:
 
 
 class TestDorisIncrementalViewReplacementFailures:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def models(cls):
         return {
             "incremental_view_build_failure.sql": INCREMENTAL_RECOVERY_SQL,
@@ -2921,8 +2921,8 @@ class TestDorisIncrementalViewReplacementFailures:
 
 
 class TestDorisViewSnapshotPreconditions:
-    @classmethod
     @pytest.fixture(scope="class")
+    @classmethod
     def macros(cls):
         return {
             "view_snapshot_failure_macros.sql": (

@@ -27,4 +27,4 @@ check-dist: build
 	$(PYTHON) -m twine check dist/*
 
 clean:
-	$(PYTHON) -c "import shutil; [shutil.rmtree(path, ignore_errors=True) for path in ('build', 'dist', 'dbt_doris.egg-info')]"
+	$(PYTHON) -c "import shutil; [shutil.rmtree(path, ignore_errors=True) for path in ('build', 'dist', 'dbt_doris.egg-info', 'dbt_for_apache_doris.egg-info')]"

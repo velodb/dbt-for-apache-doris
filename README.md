@@ -5,8 +5,9 @@
 ![dbt Core](https://img.shields.io/badge/dbt--core-1.12.x-orange)
 [![License](https://img.shields.io/badge/License-Apache--2.0-blue)](https://github.com/velodb/dbt-for-apache-doris/blob/main/LICENSE)
 
-`dbt-doris` enables Python dbt Core projects to transform data in Apache Doris
-through the Doris MySQL protocol. It is maintained by the VeloDB community.
+`dbt-for-apache-doris` enables Python dbt Core projects to transform data in
+Apache Doris through the Doris MySQL protocol. It is maintained by the VeloDB
+community.
 
 > [!IMPORTANT]
 > This adapter is **Beta**. CI covers lint, Unit tests, and package validation,
@@ -71,23 +72,22 @@ topology. Historical results are not a current-release compatibility promise.
 
 ## Installation
 
-This repository has not yet published a VeloDB-maintained package to PyPI. The
-existing [`dbt-doris==1.0.0` on PyPI](https://pypi.org/project/dbt-doris/1.0.0/)
-is a different distribution and does not contain the current repository code.
-
-Until a repository release is published, install this reviewed implementation
-baseline from a pinned commit:
+Install the VeloDB-maintained distribution from PyPI:
 
 ```shell
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install \
-  "git+https://github.com/velodb/dbt-for-apache-doris.git@51d5e1092bb5f9926b1043342cb250ac61961bf7"
+python -m pip install "dbt-for-apache-doris==1.1.0"
 dbt --version
 ```
 
+> [!WARNING]
+> The separate [`dbt-doris==1.0.0` distribution on
+> PyPI](https://pypi.org/project/dbt-doris/1.0.0/) does not contain the code
+> from this repository. Install `dbt-for-apache-doris` as shown above.
+
 On Windows, create the environment with `py -m venv .venv`, activate it using
-`.venv\Scripts\Activate.ps1`, and run the same pinned `pip install` command.
+`.venv\Scripts\Activate.ps1`, and run the same `pip install` command.
 
 The adapter declares dbt Core and the MySQL connector as dependencies, so they
 are installed automatically. You do not need to install dbt Core separately or
@@ -128,7 +128,7 @@ model-paths: ["models"]
 ```sql
 -- models/example.sql
 {{ config(materialized='table', replication_num=1) }}
-select 1 as id, 'hello from dbt-doris' as message
+select 1 as id, 'hello from dbt-for-apache-doris' as message
 ```
 
 ```yaml

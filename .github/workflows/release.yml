@@ -1,0 +1,164 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            setup.py
+            dev-requirements.txt
+
+      - name: Validate release tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from runpy import run_path
+
+          version_file = Path("dbt/adapters/doris/__version__.py")
+          version = run_path(str(version_file))["version"]
+          expected_tag = f"v{version}"
+          actual_tag = os.environ["RELEASE_TAG"]
+          if actual_tag != expected_tag:
+              raise SystemExit(
+                  f"release tag {actual_tag!r} does not match {expected_tag!r}"
+              )
+          print(f"Releasing dbt-for-apache-doris {version}")
+          PY
+
+      - name: Install test and build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e . pytest flake8 build twine
+
+      - name: Lint
+        run: python -m flake8 dbt scripts test
+
+      - name: Unit tests
+        run: python -m pytest test/unit
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distribution descriptions
+        run: python -m twine check --strict dist/*
+
+      - name: Verify distribution files and metadata
+        run: |
+          python - <<'PY'
+          from email.parser import BytesParser
+          from pathlib import Path
+          from runpy import run_path
+          import tarfile
+          import zipfile
+
+          package_name = "dbt-for-apache-doris"
+          version = run_path("dbt/adapters/doris/__version__.py")["version"]
+          expected_files = {
+              f"dbt_for_apache_doris-{version}-py3-none-any.whl",
+              f"dbt_for_apache_doris-{version}.tar.gz",
+          }
+          actual_files = {path.name for path in Path("dist").iterdir()}
+          if actual_files != expected_files:
+              raise SystemExit(
+                  "unexpected distributions: "
+                  f"expected {sorted(expected_files)}, got {sorted(actual_files)}"
+              )
+
+          wheel = Path("dist") / f"dbt_for_apache_doris-{version}-py3-none-any.whl"
+          with zipfile.ZipFile(wheel) as archive:
+              metadata_name = next(
+                  name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+              )
+              wheel_metadata = BytesParser().parsebytes(archive.read(metadata_name))
+
+          sdist = Path("dist") / f"dbt_for_apache_doris-{version}.tar.gz"
+          with tarfile.open(sdist) as archive:
+              pkg_info = next(
+                  member for member in archive.getmembers() if member.name.endswith("/PKG-INFO")
+              )
+              extracted = archive.extractfile(pkg_info)
+              if extracted is None:
+                  raise SystemExit("could not read PKG-INFO from source distribution")
+              sdist_metadata = BytesParser().parsebytes(extracted.read())
+
+          for artifact, metadata in (
+              ("wheel", wheel_metadata),
+              ("sdist", sdist_metadata),
+          ):
+              actual = (metadata["Name"], metadata["Version"])
+              expected = (package_name, version)
+              if actual != expected:
+                  raise SystemExit(
+                      f"{artifact} metadata is {actual!r}, expected {expected!r}"
+                  )
+          PY
+
+      - name: Verify clean wheel installation
+        run: |
+          wheel_venv="${RUNNER_TEMP}/wheel-venv"
+          python -m venv "$wheel_venv"
+          "$wheel_venv/bin/python" -m pip install --upgrade pip
+          "$wheel_venv/bin/python" -m pip install dist/*.whl
+          "$wheel_venv/bin/python" -m pip check
+          "$wheel_venv/bin/dbt" --version
+          "$wheel_venv/bin/python" -c "import dbt.adapters.doris"
+
+      - name: Verify clean source installation
+        run: |
+          sdist_venv="${RUNNER_TEMP}/sdist-venv"
+          python -m venv "$sdist_venv"
+          "$sdist_venv/bin/python" -m pip install --upgrade pip
+          "$sdist_venv/bin/python" -m pip install dist/*.tar.gz
+          "$sdist_venv/bin/python" -m pip check
+          "$sdist_venv/bin/dbt" --version
+          "$sdist_venv/bin/python" -c "import dbt.adapters.doris"
+
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/dbt-for-apache-doris/
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
