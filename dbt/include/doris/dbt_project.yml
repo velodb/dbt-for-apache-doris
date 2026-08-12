@@ -19,8 +19,6 @@
 # under the License.
 
 name: dbt_doris
-# Keep in sync with package_version in setup.py and dbt/adapters/doris/__version__.py
-version: 1.0.0
 config-version: 2
 
 macro-paths: ["macros"]

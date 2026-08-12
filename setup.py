@@ -19,12 +19,13 @@
 # under the License.
 
 from pathlib import Path
+from runpy import run_path
 
 from setuptools import find_namespace_packages, setup
 
-package_name = "dbt-doris"
-# make sure this always matches dbt/adapters/{adapter}/__version__.py
-package_version = "1.0.0"
+package_name = "dbt-for-apache-doris"
+version_file = Path(__file__).parent / "dbt" / "adapters" / "doris" / "__version__.py"
+package_version = run_path(str(version_file))["version"]
 dbt_core_version = "1.12.0"
 description = "A dbt adapter for VeloDB and Apache Doris"
 repository_url = "https://github.com/velodb/dbt-for-apache-doris"

@@ -20,14 +20,34 @@
 
 """Source packaging checks for the supported dbt runtime."""
 
+from importlib.metadata import metadata
 import re
 from pathlib import Path
+from runpy import run_path
+
+import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def read_setup_py():
     return (PROJECT_ROOT / "setup.py").read_text()
+
+
+def test_distribution_uses_expected_name():
+    assert metadata("dbt-for-apache-doris")["Name"] == "dbt-for-apache-doris"
+
+
+def test_distribution_uses_adapter_module_as_single_version_source():
+    version_file = PROJECT_ROOT / "dbt/adapters/doris/__version__.py"
+    adapter_version = run_path(str(version_file))["version"]
+
+    assert metadata("dbt-for-apache-doris")["Version"] == adapter_version
+
+    project_yml = yaml.safe_load(
+        (PROJECT_ROOT / "dbt/include/doris/dbt_project.yml").read_text()
+    )
+    assert "version" not in project_yml
 
 
 def test_setup_pins_dbt_core_1_12():

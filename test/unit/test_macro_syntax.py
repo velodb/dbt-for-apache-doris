@@ -20,19 +20,13 @@
 
 """Static checks over the shipped macros. No cluster, no dbt project."""
 
-import os
 import re
 from collections import defaultdict
 
 import pytest
-import yaml
 from dbt_common.clients.jinja import get_environment
 
-from dbt.adapters.doris.__version__ import version as adapter_version
-
-from .macro_harness import MACRO_ROOT, macro_files, read_macro_file, top_level_blocks
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from .macro_harness import macro_files, read_macro_file, top_level_blocks
 
 
 @pytest.mark.parametrize("rel_path", macro_files())
@@ -86,29 +80,3 @@ def test_materializations_are_adapter_scoped():
             "it must be adapter-scoped, e.g. materialization "
             f"{name}, adapter='doris'"
         )
-
-
-def test_version_is_consistent():
-    """setup.py, the adapter module and dbt_project.yml must agree.
-
-    dbt reads the version out of the adapter module, pip out of setup.py. When
-    they drift, `dbt --version` reports one number and the installed
-    distribution another.
-    """
-    setup_py = open(os.path.join(PROJECT_ROOT, "setup.py")).read()
-    match = re.search(r'package_version\s*=\s*"([^"]+)"', setup_py)
-    assert match, "could not find package_version in setup.py"
-    setup_version = match.group(1)
-
-    project_yml = yaml.safe_load(
-        open(os.path.join(os.path.dirname(MACRO_ROOT), "dbt_project.yml"))
-    )
-
-    assert setup_version == adapter_version, (
-        f"setup.py says {setup_version}, "
-        f"dbt/adapters/doris/__version__.py says {adapter_version}"
-    )
-    assert str(project_yml["version"]) == adapter_version, (
-        f"dbt_project.yml says {project_yml['version']}, "
-        f"dbt/adapters/doris/__version__.py says {adapter_version}"
-    )
