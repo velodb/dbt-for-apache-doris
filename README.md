@@ -25,10 +25,9 @@ and targets compatible VeloDB deployments as well.
 | Incremental | ✅ Supported | `append`, `merge`, `insert_overwrite`, and `microbatch`; all `on_schema_change` modes |
 | Partition | ✅ Supported | Doris-specific replacement of selected RANGE partitions |
 | Snapshot | ✅ Supported | `check` and `timestamp`, hard-delete modes, schema evolution, atomic replacement, and failed-run recovery |
-| Async materialized view | ✅ Supported | Immediate/deferred build; manual/schedule/commit refresh; task waiting; configuration change; atomic replacement and recovery |
+| Materialized view | ✅ Supported | Standard dbt `materialized_view`, implemented with Doris Async MV; immediate/deferred build, manual/schedule/commit refresh, task waiting, configuration change, atomic replacement, and recovery |
 | Seed | ✅ Supported | CSV seeds and column type configuration |
 | Ephemeral | ✅ Supported | Compiled and inlined by dbt Core |
-| Sync materialized view | ❌ Not supported | Doris synchronous rollups have a different lifecycle and are outside this adapter |
 
 ### dbt features
 
@@ -176,10 +175,10 @@ The adapter intentionally does not support `delete+insert`, partial-column
 merge (`merge_update_columns` or `merge_exclude_columns`), or
 `incremental_predicates`.
 
-## Asynchronous materialized views
+## Materialized views
 
-Use the standard dbt materialized-view materialization with Doris-specific
-refresh configuration:
+Use dbt's standard `materialized_view` materialization. The adapter implements
+it with Doris Async MV and exposes Doris-specific refresh configuration:
 
 ```sql
 {{ config(
