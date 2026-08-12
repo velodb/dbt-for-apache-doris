@@ -236,19 +236,6 @@
 
 {%- endmacro %}
 
-{% macro doris__timestimp_id() -%}
- {{ return( (modules.datetime.datetime.now() ~ "").replace('-','').replace(':','').replace('.','').replace(' ','') ) }}
-{%- endmacro %}
-
-{% macro doris__with_label() -%}
-  {% set lable_suffix_id = config.get('label_id', validator=validation.any[basestring]) %}
-  {% if lable_suffix_id in [none,'DEFAULT'] %}
-    WITH LABEL dbt_doris_label_{{doris__timestimp_id()}}
-  {% else %}
-    WITH LABEL dbt_doris_label_{{ lable_suffix_id }}
-  {% endif %}
-{%- endmacro %}
-
 {% macro doris__get_or_create_relation(database, schema, identifier, type) %}
   {%- set target_relation = adapter.get_relation(database=database, schema=schema, identifier=identifier) %}
 
@@ -279,8 +266,4 @@
        Adding them means exposing an `indexes` config and building the clauses at
        CREATE TABLE time, since Doris declares indexes in the table definition
        rather than through a separate CREATE INDEX statement. --#}
-{%- endmacro %}
-
-{% macro catalog_source(catalog,database,table) -%}
-  `{{catalog}}`.`{{database}}`.`{{table}}`
 {%- endmacro %}
