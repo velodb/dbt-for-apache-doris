@@ -143,6 +143,7 @@ logs/
 dbt_packages/
 .dbt/
 profiles.yml
+/test/doris_test.env
 
 # The target repository intentionally omits standalone design and test records.
 /docs/

@@ -55,11 +55,16 @@ def test_docs_are_excluded_from_distributions():
     assert "\nprune docs\n" in manifest
 
 
+def test_functional_runner_is_included_in_source_distributions():
+    manifest = (PROJECT_ROOT / "MANIFEST.in").read_text()
+
+    assert "recursive-include scripts *.py" in manifest
+    assert "include test/doris_test.env" in manifest
+
+
 def test_runtime_and_development_connector_floors_match():
     setup_py = read_setup_py()
-    development_requirements = (
-        PROJECT_ROOT / "dev-requirements.txt"
-    ).read_text()
+    development_requirements = (PROJECT_ROOT / "dev-requirements.txt").read_text()
 
     requirement = "mysql-connector-python>=8.0.33"
     assert f'"{requirement}"' in setup_py

@@ -3,99 +3,103 @@
 [![CI](https://github.com/velodb/dbt-for-apache-doris/actions/workflows/ci.yml/badge.svg)](https://github.com/velodb/dbt-for-apache-doris/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-%3E%3D3.10-blue)
 ![dbt Core](https://img.shields.io/badge/dbt--core-1.12.x-orange)
-![License](https://img.shields.io/badge/License-Apache--2.0-blue)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue)](https://github.com/velodb/dbt-for-apache-doris/blob/main/LICENSE)
 
-`dbt-doris` is a dbt Core adapter for transforming data in Apache Doris over
-the Doris MySQL protocol. The project is maintained by the VeloDB community
-and targets compatible VeloDB deployments as well.
+`dbt-doris` enables Python dbt Core projects to transform data in Apache Doris
+through the Doris MySQL protocol. It is maintained by the VeloDB community.
 
 > [!IMPORTANT]
-> This adapter is currently **Beta**. GitHub Actions validates lint, 373 Unit
-> tests, and Python package construction, but it does not run a live Doris
-> cluster. VeloDB-specific release verification is still pending.
+> This adapter is **Beta**. CI covers lint, Unit tests, and package validation,
+> but not a live Doris cluster. Current-release compatibility and VeloDB
+> verification are pending.
+
+**[Installation](#installation)** · **[Quickstart](#quickstart)** ·
+**[Compatibility](#compatibility)** ·
+**[dbt docs](https://docs.getdbt.com/)** ·
+**[Doris docs](https://doris.apache.org/docs/)** ·
+**[Issues](https://github.com/velodb/dbt-for-apache-doris/issues)** ·
+**[Releases](https://github.com/velodb/dbt-for-apache-doris/releases)**
 
 ## Supported capabilities
 
+Status: ✅ Supported · ⚠️ Limited · 🧪 Experimental · ❌ Not supported
+
+Feature status and database-version compatibility are separate contracts.
+`Supported` means the documented scope is implemented and tested. `Limited`
+means the capability is usable within a deliberately narrow or incompletely
+conformance-tested scope. An explicit platform boundary does not by itself make
+a capability experimental.
+
 ### Materializations
 
-| Capability | Status | Current support |
+| Capability | Status | Current support and boundaries |
 | --- | --- | --- |
-| Table | ✅ Supported | Doris Duplicate Key and Unique Key tables, distribution, buckets, RANGE/LIST partitions, table properties, contracts, docs, grants, and hooks |
-| View | ✅ Supported | Standard dbt view lifecycle, contracts, relation docs, grants, and hooks |
-| Incremental | ✅ Supported | `append`, `merge`, `insert_overwrite`, and `microbatch`; all `on_schema_change` modes |
-| Partition | ✅ Supported | Doris-specific replacement of selected RANGE partitions |
-| Snapshot | ✅ Supported | `check` and `timestamp`, hard-delete modes, schema evolution, atomic replacement, and failed-run recovery |
-| Materialized view | ✅ Supported | Standard dbt `materialized_view`, implemented with Doris Async MV; immediate/deferred build, manual/schedule/commit refresh, task waiting, configuration change, atomic replacement, and recovery |
-| Seed | ✅ Supported | CSV seeds and column type configuration |
+| Table | ✅ Supported | Duplicate Key CTAS; configurable HASH distribution, integer buckets, RANGE/LIST partitions, properties, contracts, docs, grants, and hooks. Unique Key creation belongs to incremental `merge` |
+| View | ✅ Supported | Standard lifecycle, contracts, docs, grants, and hooks; relation-type switching is not zero-downtime |
+| Incremental | ✅ Supported | Four strategies and every `on_schema_change` mode; boundaries are listed below |
+| Snapshot | ✅ Supported | `check`/`timestamp`, hard-delete modes, schema evolution, atomic replacement, and recovery; same-target runs must be serialized by the scheduler |
+| Partition (legacy) | ⚠️ Limited | Compatibility materialization for single-column integer RANGE partitions using `p<value>` names; multi-partition runs are not batch-atomic. Prefer incremental `insert_overwrite` for new models |
+| Materialized view | ✅ Supported | Standard dbt `materialized_view`, implemented with Doris Async MV; build/refresh lifecycle, task waiting, configuration changes, atomic replacement, and recovery. Same-target dbt runs must be serialized by the scheduler |
+| Seed | ✅ Supported | CSV loading, type inference, `column_types`, and `ref` |
 | Ephemeral | ✅ Supported | Compiled and inlined by dbt Core |
 
-### dbt features
+### dbt capabilities
 
-| Capability | Status | Current support |
+| Capability | Status | Current support and boundaries |
 | --- | --- | --- |
-| Sources and freshness | ✅ Supported | Source relations plus `loaded_at_field`, filter, and `loaded_at_query` freshness paths |
-| Data tests | ✅ Supported | Singular and generic tests, including `store_failures` |
+| Sources and freshness | ✅ Supported | `loaded_at_field`, filter, and `loaded_at_query`; cross-database uses database-as-schema, not External Catalog |
+| Data tests | ✅ Supported | Singular, generic, ephemeral, and `store_failures` paths |
 | dbt Unit tests | ✅ Supported | Inline-row and CSV fixtures, case-insensitive columns, invalid-input validation, quoted reserved words, Doris-adapted data-type fixtures, and non-truncating VARCHAR fixtures |
-| Model contracts | ✅ Supported | Enforced contracts for table, view, and incremental models |
-| Persisted docs | ✅ Supported | Relation and column comments; View comments are updated when the View is recreated rather than with an in-place `ALTER` |
-| Grants | ⚠️ Limited | Direct Doris user grants; role-based grants are not supported |
-| Hooks | ✅ Supported | Pre-hooks and post-hooks |
-| Metadata | ✅ Supported | Schema, relation, column, and internal-catalog introspection |
-| Cross-database sources | ✅ Supported | Doris databases map through dbt schemas; dbt database metadata is omitted or normalized to the same value |
+| Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; not database PK/NOT NULL constraints |
+| Persisted docs | ✅ Supported | Relation and column comments for Table, View, Incremental, Snapshot, Seed, and Async MV; updating View comments or comment text containing both quote delimiters may require recreation/full refresh |
+| Grants | ✅ Supported | Reconciles supported Doris table privileges for `user` and `user@host` principals on Table, View, Incremental, Seed, Snapshot, and Async MV; roles and legacy Partition are not reconciled |
+| Hooks | ✅ Supported | Pre-hooks and post-hooks across adapter materializations; Doris does not provide transactional rollback for hook side effects |
+| Internal metadata and dbt docs catalog | ✅ Supported | Relation discovery and docs catalog for Doris databases, tables, views, columns, comments, and Async MVs |
+| Cross-database sources | ✅ Supported | Sources in other Doris databases, including database-only source definitions; External Catalog three-part names are not supported |
+| Advanced metadata / External Catalog | ❌ Not supported | Catalogs V2, metadata-by-relation, single-relation catalog, last-modified metadata, and External Catalog three-part namespaces are not declared |
+
+## Compatibility
+
+| Component | Declared or runtime constraint | Current evidence or status |
+| --- | --- | --- |
+| Python | `>=3.10` | Unit CI covers 3.10 and 3.14; the distribution-build job uses 3.12 |
+| dbt Core | `>=1.12,<1.13` | Declared lower bound is 1.12.0; Python dbt Core v1 only. Fusion/v2 compatibility is not claimed |
+| MySQL connector | `>=8.0.33` | Installed automatically with the adapter |
+| Apache Doris | No package-wide minimum has been declared | Historical exact-release evidence exists, but the current release-candidate SHA still needs a complete live matrix |
+| Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate is not a whole-adapter compatibility guarantee. Identifiable source builds are accepted for development testing only |
+| VeloDB | No release range has been declared | Release-specific live-cluster verification is pending |
+
+Before production use, run Functional tests against your exact release and
+topology. Historical results are not a current-release compatibility promise.
 
 ## Installation
 
-This repository has not published a VeloDB-maintained package to PyPI yet.
-The existing [`dbt-doris==1.0.0` project on PyPI](https://pypi.org/project/dbt-doris/1.0.0/)
-is an earlier distribution and does not contain the current code from this
-repository.
+This repository has not yet published a VeloDB-maintained package to PyPI. The
+existing [`dbt-doris==1.0.0` on PyPI](https://pypi.org/project/dbt-doris/1.0.0/)
+is a different distribution and does not contain the current repository code.
 
-Install the current source in a virtual environment:
+Until a repository release is published, install this reviewed implementation
+baseline from a pinned commit:
 
 ```shell
-git clone https://github.com/velodb/dbt-for-apache-doris.git
-cd dbt-for-apache-doris
-
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install .
-```
-
-The adapter declares `dbt-core~=1.12.0` and `mysql-connector-python` as
-dependencies, so `pip` installs them automatically. Verify the installation:
-
-```shell
+python -m pip install \
+  "git+https://github.com/velodb/dbt-for-apache-doris.git@51d5e1092bb5f9926b1043342cb250ac61961bf7"
 dbt --version
 ```
 
-### Build and install a local package
+On Windows, create the environment with `py -m venv .venv`, activate it using
+`.venv\Scripts\Activate.ps1`, and run the same pinned `pip install` command.
 
-Run the build from the repository root:
+The adapter declares dbt Core and the MySQL connector as dependencies, so they
+are installed automatically. You do not need to install dbt Core separately or
+download a standalone binary.
 
-```shell
-python -m pip install build
-python -m build
-```
+## Quickstart
 
-The build creates two distributable files under `dist/`:
-
-- `dbt_doris-1.0.0-py3-none-any.whl`: the pure-Python,
-  platform-independent wheel
-- `dbt_doris-1.0.0.tar.gz`: the source distribution
-
-Install the wheel from the repository root:
-
-```shell
-python -m pip install dist/dbt_doris-1.0.0-py3-none-any.whl
-```
-
-The install command is not tied to the repository directory. From another
-directory, pass a relative or absolute path to the wheel instead.
-
-## Quick start
-
-Add a Doris output to `~/.dbt/profiles.yml`:
+Add a Doris output to `~/.dbt/profiles.yml`. Keep credentials outside version
+control; this example reads the password from an environment variable:
 
 ```yaml
 doris_demo:
@@ -106,22 +110,14 @@ doris_demo:
       host: 127.0.0.1
       port: 9030
       username: root
-      password: ""
+      password: "{{ env_var('DORIS_PASSWORD') }}"
       schema: analytics
       threads: 4
 ```
 
-On Doris, the dbt `schema` is the Doris database. If `database` is also set,
-it must have the same value as `schema`.
+On Doris, `schema` is a database; an optional `database` must match it.
 
-Create a separate dbt project directory (outside this adapter repository), then
-add the minimal project and model files below:
-
-```shell
-cd ..
-mkdir -p doris-demo/models
-cd doris-demo
-```
+Create a new `doris-demo` directory with a `models` subdirectory, then add:
 
 ```yaml
 # dbt_project.yml
@@ -135,7 +131,6 @@ model-paths: ["models"]
 ```sql
 -- models/example.sql
 {{ config(materialized='table', replication_num=1) }}
-
 select 1 as id, 'hello from dbt-doris' as message
 ```
 
@@ -146,36 +141,36 @@ models:
   - name: example
     columns:
       - name: id
-        data_tests:
-          - not_null
-          - unique
+        data_tests: [not_null, unique]
 ```
 
-Verify the connection, build the model, and run its tests:
+`replication_num=1` is only for a local single-BE Quickstart.
 
 ```shell
+export DORIS_PASSWORD='<your-password>'
 dbt debug
-dbt run
-dbt test
+dbt build
 ```
 
-## Incremental strategies
+On Windows PowerShell, set the password with
+`$env:DORIS_PASSWORD = '<your-password>'`, then run the same dbt commands.
+
+## Doris-specific highlights
+
+### Incremental strategies
 
 | Strategy | Doris target | Behavior and boundaries |
 | --- | --- | --- |
 | `append` | Duplicate Key table | Appends rows with `INSERT INTO` |
-| `merge` | MOW or MOR Unique Key table | Full-row `INSERT INTO` upsert using Doris Unique Key semantics; it does not emit `MERGE INTO` |
-| `insert_overwrite` | Writable Doris table | Native whole-table or named-partition `INSERT OVERWRITE`; `unique_key` is rejected to prevent accidental destructive semantics |
-| `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; supports hour/day/month/year windows and currently runs batches serially |
+| `merge` | MOW or MOR Unique Key table | Full-row `INSERT INTO` upsert using Doris Unique Key semantics; requires `unique_key` and does not emit SQL `MERGE INTO` |
+| `insert_overwrite` | Writable Doris table | Whole-table, named-partition, or dynamic-partition `INSERT OVERWRITE`; `unique_key` is rejected |
+| `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; hour/day/month/year windows; static or dynamic partitions; batches run serially |
 
-If `incremental_strategy` is omitted, a model with `unique_key` uses `merge`;
-a model without one uses `append`.
+Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses
+`append`. `delete+insert`, partial-column merge, and `incremental_predicates`
+are rejected.
 
-The adapter intentionally does not support `delete+insert`, partial-column
-merge (`merge_update_columns` or `merge_exclude_columns`), or
-`incremental_predicates`.
-
-## Materialized views
+### Materialized views
 
 Use dbt's standard `materialized_view` materialization. The adapter implements
 it with Doris Async MV and exposes Doris-specific refresh configuration:
@@ -183,8 +178,6 @@ it with Doris Async MV and exposes Doris-specific refresh configuration:
 ```sql
 {{ config(
     materialized='materialized_view',
-    build_mode='immediate',
-    refresh_method='auto',
     refresh_trigger='manual',
     wait_for_refresh=true
 ) }}
@@ -194,94 +187,63 @@ from {{ ref('orders') }}
 group by order_date
 ```
 
-| Config | Values and behavior |
-| --- | --- |
-| `build_mode` | `immediate` (default) or `deferred` |
-| `refresh_method` | `auto` (default) or `complete` |
-| `refresh_trigger` | `manual` (default), `schedule`, or `commit` |
-| `refresh_schedule` | Mapping with `interval`, `unit`, and optional `start_time`; production units are minute/hour/day/week |
-| `wait_for_refresh` | Wait for the initial build or adapter-submitted manual refresh; defaults to `true` |
-| `refresh_wait_timeout` / `refresh_poll_interval` | Task timeout and polling interval in seconds |
-| `on_configuration_change` | `apply`, `continue`, or `fail` |
-
-An unchanged manual MV is refreshed whenever the model is selected again;
-scheduled and commit-triggered MVs leave refresh timing to Doris. The adapter
-waits for Doris task history by comparing task IDs before and after submission.
-Concurrent refreshes of the same MV can therefore be associated with the wrong
-task, and a dbt timeout does not cancel a task already submitted to Doris.
-
-## Compatibility and verification
-
-| Component | Current policy or evidence |
-| --- | --- |
-| Python | 3.10 or newer |
-| dbt Core | 1.12.x |
-| Doris | Doris 4.1.3 is the latest recorded full-suite baseline; earlier exact releases have historical focused coverage |
-| Async MV runtime gate | Accepts Doris 2.1.5+, except 3.0.0; this code gate is not a full compatibility guarantee |
-| VeloDB | Release-specific live-cluster verification is pending |
-| GitHub CI | Flake8, 373 Unit tests on Python 3.10 and 3.14, plus wheel/sdist build and Twine checks |
-| Live Functional tests | 168 tests are collected, but they are not run by GitHub Actions |
-
-Before production use, validate the adapter against the exact Doris or VeloDB
-release and topology you deploy.
+Supported lifecycles include immediate/deferred build, manual/schedule/commit
+refresh, task waiting, configuration changes, docs, grants, and recovery.
+Overlapping dbt runs against the same MV target must be serialized, and a dbt
+wait timeout does not cancel a submitted Doris task.
 
 ## Known limitations
 
-- Microbatch execution is serial; concurrent batches are disabled.
-- Running the same Snapshot concurrently from multiple dbt processes is not
+- Microbatch execution is serial.
+- Do not run multiple dbt invocations against the same Snapshot target concurrently;
+  serialize overlapping production jobs in the scheduler.
+- Serialize overlapping dbt runs against the same MV target; a dbt wait timeout
+  does not cancel the submitted Doris task.
+- Ordinary `table` models create Duplicate Key tables. Aggregate Key modeling,
+  secondary indexes, and a complete Doris table abstraction are not implemented.
+- `delete+insert`, partial-column merge, and `incremental_predicates` are not
   supported.
-- Async MV task correlation is not safe for concurrent refreshes of the same MV.
-- Aggregate Key modeling, complete Doris partition/distribution abstractions,
-  secondary indexes, and synchronous MVs are not implemented.
-- SSL settings, connection timeout/retry, multi-FE failover, server-side query
-  cancellation, and complete query telemetry are not implemented.
-- External Catalog is not represented as a full dbt namespace.
-- GitHub Actions does not yet provide a live-Doris Functional gate or a
-  multi-version nightly matrix.
+- A complete External Catalog namespace is unsupported.
+- SSL configuration, timeout/retry, multi-FE failover, server-side cancellation,
+  and complete query telemetry are not implemented.
+- Some Table/View/MV type changes have a short canonical-name availability
+  window rather than a zero-downtime switch.
 
 ## Development and testing
 
-Install the development dependencies and the adapter in editable mode:
+Install development dependencies, then run local checks:
 
 ```shell
 python -m pip install -r dev-requirements.txt
 python -m pip install -e .
+make lint
+make test-unit
 ```
 
-Unit tests and lint do not require Doris:
+Functional tests need a dedicated non-production cluster. Edit
+`test/doris_test.env`; use an external file for private credentials:
 
 ```shell
-python -m flake8 dbt test
-python -m pytest test/unit
+make test
+make test DORIS_TEST_CONFIG=/secure/path/doris_test.env
 ```
 
-Functional tests require a reachable Doris cluster. The defaults target
-`127.0.0.1:9030`, user `root`, schema `dbt_test`, and one replica:
+Preflight records live FE/BE versions, checks replication against live BEs, and
+requires `cross_db_test` to be absent. Tests create/drop databases, relations,
+users, and grants, so the account needs those permissions. Never use a shared
+or production cluster or run Functional sessions concurrently.
 
 ```shell
-DORIS_TEST_HOST=127.0.0.1 \
-DORIS_TEST_PORT=9030 \
-DORIS_TEST_USER=root \
-DORIS_TEST_PASSWORD='' \
-DORIS_TEST_SCHEMA=dbt_test \
-DORIS_TEST_REPLICATION_NUM=1 \
-  python -m pytest test/functional
+python scripts/run_doris_functional_tests.py --preflight-only
+python scripts/run_doris_functional_tests.py -- -k snapshot -vv
 ```
 
-## Release model
-
-The intended user installation channel is PyPI. A release should publish one
-immutable build to both PyPI and the matching GitHub Release:
-
-- `dbt_doris-X.Y.Z-py3-none-any.whl`
-- `dbt_doris-X.Y.Z.tar.gz`
-
-Before the first repository release, the maintainers must confirm ownership of
-the existing `dbt-doris` PyPI project, choose a new version (PyPI versions are
-immutable), and configure PyPI Trusted Publishing. The current CI only builds
-and inspects distributions; it does not upload them.
+The runner records evidence about the connected cluster but does not certify a
+release compatibility matrix.
 
 ## License
 
-The code is licensed under Apache License 2.0. See [LICENSE](LICENSE) and
-[NOTICE](NOTICE).
+The code is licensed under Apache License 2.0. See the
+[license](https://github.com/velodb/dbt-for-apache-doris/blob/main/LICENSE),
+[notice](https://github.com/velodb/dbt-for-apache-doris/blob/main/NOTICE), and
+[migration provenance](https://github.com/velodb/dbt-for-apache-doris/blob/main/UPSTREAM.md).
