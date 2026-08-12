@@ -22,7 +22,7 @@
         {% set relation = adapter.get_relation(this.database, this.schema, this.table) %}
         {{ return(relation is not none
                   and relation.type == 'table'
-                  and model.config.materialized in ['incremental','partition']
+                  and model.config.materialized == 'incremental'
                   and not should_full_refresh()) }}
     {% endif %}
 {% endmacro %}
@@ -1057,28 +1057,4 @@ Doris incremental strategy '{{ strategy }}' configured unique_key
         )) }}
     {% endif %}
     {{ return(none) }}
-{% endmacro %}
-
-
-{# Backwards-compatible insert helper retained for packages that called it directly. #}
-{% macro tmp_insert(tmp_relation, target_relation, unique_key=none, statement_name='main') %}
-    {% set dest_columns = adapter.get_columns_in_relation(target_relation) %}
-    {% set arg_dict = {
-        'temp_relation': tmp_relation,
-        'temp_relation_exists': true,
-        'dest_columns': dest_columns
-    } %}
-    insert into {{ target_relation }}
-        ({{ doris__incremental_dest_columns_csv(dest_columns) }})
-    {{ doris__incremental_source_select(arg_dict) }}
-{% endmacro %}
-
-
-{% macro show_create(target_relation, statement_name='table_model') %}
-    show create table {{ target_relation }}
-{% endmacro %}
-
-
-{% macro is_unique_model(target_relation) %}
-    {{ return(doris__get_table_model(target_relation) == 'unique') }}
 {% endmacro %}

@@ -172,36 +172,6 @@ class FakeAdapter:
         return f"`{identifier}`"
 
 
-class FakeRow:
-    """Stand-in for an agate Row, as returned by ``run_query``.
-
-    Iteration yields *values*, not keys -- the partition macros rely on that.
-    """
-
-    def __init__(self, mapping: Dict[str, Any]):
-        self._mapping = dict(mapping)
-
-    def __iter__(self):
-        return iter(self._mapping.values())
-
-    def __len__(self):
-        return len(self._mapping)
-
-    def __getitem__(self, key):
-        if isinstance(key, int):
-            return list(self._mapping.values())[key]
-        return self._mapping[key]
-
-    def items(self):
-        return self._mapping.items()
-
-    def keys(self):
-        return self._mapping.keys()
-
-    def values(self):
-        return self._mapping.values()
-
-
 class CapturedCompilerError(Exception):
     """Raised in place of dbt's compiler error, so tests can assert on it."""
 
@@ -267,8 +237,8 @@ class MacroRunner:
         """Mirror dbt's MacroGenerator: ``return()`` ends one macro, not the stack.
 
         ``return()`` raises MacroReturn, and dbt catches it around each macro
-        call. Without this wrapper a ``return()`` in a nested macro -- say
-        ``get_partition_items`` -- would unwind the caller's loop as well.
+        call. Without this wrapper a ``return()`` in a nested helper macro
+        would unwind the caller as well.
         """
 
         def wrapper(*args, **kwargs):

@@ -733,37 +733,6 @@ class TestDorisSnapshotWrongTargetType:
         ) == [(99, "keep-me")]
 
 
-ORPHAN_SNAPSHOT_SQL = SNAPSHOT_SQL.replace("snap_users", "snap_orphan")
-
-
-class TestDorisSnapshotLegacyOrphanRecovery:
-    @pytest.fixture(scope="class")
-    def models(self):
-        return {"snap_source.sql": SOURCE_TABLE_SQL}
-
-    @pytest.fixture(scope="class")
-    def snapshots(self):
-        return {"snap_orphan.sql": ORPHAN_SNAPSHOT_SQL}
-
-    def test_complete_legacy_upsert_is_recovered_when_target_is_missing(
-        self, project
-    ):
-        assert len(run_dbt(["run"])) == 1
-        assert len(run_dbt(["snapshot"])) == 1
-        relation = relation_from_name(project.adapter, "snap_orphan")
-        upsert = f"{relation.schema}.snap_orphan__snapshot_upsert"
-
-        project.run_sql(f"create table {upsert} like {relation}")
-        project.run_sql(f"insert into {upsert} select * from {relation}")
-        project.run_sql(f"drop table {relation}")
-
-        assert len(run_dbt(["snapshot"])) == 1
-        assert project.run_sql(
-            f"select count(*) from {relation}", fetch="one"
-        )[0] == 2
-        assert helper_relations(project, relation) == []
-
-
 DOCUMENTED_SNAPSHOT_SQL = """
 {% snapshot snap_documented %}
 {{

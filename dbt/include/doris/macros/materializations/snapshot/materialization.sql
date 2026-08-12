@@ -41,33 +41,11 @@
     {% do exceptions.relation_wrong_type(target_relation, 'table') %}
   {% endif %}
 
-  {# Recover the only unsafe state produced by dbt-doris versions before the
-     atomic implementation: DROP target succeeded after the complete upsert was
-     built, but RENAME failed. No new implementation path removes the target
-     before replacement, so this recovery is intentionally narrow. #}
-  {% if not target_relation_exists %}
-    {% set orphaned_upsert = adapter.get_relation(
-        database=target_relation.database,
-        schema=target_relation.schema,
-        identifier=upsert_relation.identifier
-    ) %}
-    {% if orphaned_upsert is not none %}
-      {% if not orphaned_upsert.is_table %}
-        {% do exceptions.relation_wrong_type(orphaned_upsert, 'table') %}
-      {% endif %}
-      {% do doris__validate_snapshot_upsert(orphaned_upsert) %}
-      {% do adapter.rename_relation(orphaned_upsert, target_relation) %}
-      {% set target_relation_exists = true %}
-    {% endif %}
-  {% endif %}
-
   {# Fixed helper names are reserved by this materialization. Every execution
      starts clean; the target remains authoritative while helpers are rebuilt. #}
   {% do doris__drop_relation(staging_relation) %}
   {% do doris__drop_relation(initial_relation) %}
-  {% if target_relation_exists %}
-    {% do doris__drop_relation(upsert_relation) %}
-  {% endif %}
+  {% do doris__drop_relation(upsert_relation) %}
 
   {{ run_hooks(pre_hooks, inside_transaction=false) }}
   {{ run_hooks(pre_hooks, inside_transaction=true) }}
