@@ -1,0 +1,4 @@
+interface:
+  display_name: "dbt Doris Release"
+  short_description: "Safely release dbt-for-apache-doris to PyPI"
+  default_prompt: "Use $release-skill to release a specified dbt-for-apache-doris version step by step."
