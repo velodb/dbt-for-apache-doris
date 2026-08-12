@@ -36,7 +36,7 @@ and targets compatible VeloDB deployments as well.
 | --- | --- | --- |
 | Sources and freshness | ✅ Supported | Source relations plus `loaded_at_field`, filter, and `loaded_at_query` freshness paths |
 | Data tests | ✅ Supported | Singular and generic tests, including `store_failures` |
-| dbt Unit tests | ✅ Supported | User-authored SQL model Unit tests |
+| dbt Unit tests | ✅ Supported | Inline-row and CSV fixtures, case-insensitive columns, invalid-input validation, quoted reserved words, Doris-adapted data-type fixtures, and non-truncating VARCHAR fixtures |
 | Model contracts | ✅ Supported | Enforced contracts for table, view, and incremental models |
 | Persisted docs | ✅ Supported | Relation and column comments; View comments are updated when the View is recreated rather than with an in-place `ALTER` |
 | Grants | ⚠️ Limited | Direct Doris user grants; role-based grants are not supported |

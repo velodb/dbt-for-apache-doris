@@ -44,6 +44,20 @@ TABLE_MACROS = ("materializations/table/create_table_as.sql", "adapters/relation
 CREATE_TABLE_MACROS = ("doris__create_table_as", "doris__create_unique_table_as")
 
 
+def unit_testing_runner(model=None):
+    return MacroRunner(
+        "adapters/unit_testing.sql",
+        context={
+            "model": model or {"resource_type": "model", "name": "upstream"},
+            "safe_cast": lambda value, data_type: f"cast({value} as {data_type})",
+            "dbt": {
+                "string_literal": lambda value: f"'{value}'",
+                "escape_single_quotes": lambda value: value.replace("'", "''"),
+            },
+        },
+    )
+
+
 def statement_count(sql):
     """Number of SQL statements in a rendered string.
 
@@ -70,6 +84,34 @@ def test_current_timestamp_is_utc():
     runner = MacroRunner("adapters/freshness.sql")
 
     assert runner.sql("doris__current_timestamp") == "utc_timestamp()"
+
+
+class TestUnitTestingFixtures:
+    def test_string_fixture_widens_bounded_varchar(self):
+        formatted = unit_testing_runner().render(
+            "format_row",
+            {"name": "longer_string_value"},
+            {"name": "varchar(5)"},
+        )
+
+        assert formatted == {"name": "cast('longer_string_value' as varchar)"}
+
+    def test_non_string_fixture_preserves_bounded_varchar(self):
+        formatted = unit_testing_runner().render(
+            "format_row",
+            {"name": 123},
+            {"name": "varchar(5)"},
+        )
+
+        assert formatted == {"name": "cast(123 as varchar(5))"}
+
+    def test_invalid_fixture_column_raises_compiler_error(self):
+        with pytest.raises(CapturedCompilerError, match="Invalid column name"):
+            unit_testing_runner().render(
+                "format_row",
+                {"missing": "value"},
+                {"name": "varchar(5)"},
+            )
 
 
 class TestGrants:
