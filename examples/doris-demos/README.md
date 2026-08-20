@@ -1,8 +1,39 @@
 # Doris dbt demos
 
-These examples show five common dbt workflows running end to end on Apache Doris.
-The Jupyter Notebook exposes every source, model, intermediate relation, data
-change, test, and final result.
+These are product-facing examples for `dbt-for-apache-doris`. They show how a
+dbt project is compiled and executed on Apache Doris, and how the adapter maps
+dbt concepts to Doris databases, Tables, Views, Unique Key tables, Snapshots,
+and Async Materialized Views.
+
+They are standalone examples, not a benchmark runner. Each example owns its
+small Doris fixture and can be run independently. The shell scripts are the
+repeatable path; the Jupyter Notebook presents the same work as an interactive
+walkthrough.
+
+## What the examples show
+
+Every demo follows the same data path:
+
+```text
+Doris source table or CSV
+        -> dbt Source or Seed
+        -> staging View
+        -> business model
+        -> dbt Data Test or Snapshot check
+        -> Doris verifier and result query
+```
+
+The five examples cover the adapter behaviors most users need to see first:
+
+- how a Table model becomes a Doris table with partitioning, bucketing, and properties;
+- how multiple Doris databases are declared as dbt Sources and connected with `ref()`;
+- how CSV data is loaded with Seed and transformed with a package macro;
+- how `incremental` with `unique_key` applies a late correction through Doris Unique Key merge;
+- how Snapshot records an update and a hard delete as SCD Type 2 history.
+
+The Notebook makes each arrow in the flow visible. It shows the input rows,
+the dbt file being used, the intermediate relation, the Data Test result, and
+the final Doris rows instead of hiding everything behind one command.
 
 | Demo | What it demonstrates | Main dbt and Doris capabilities |
 | --- | --- | --- |
