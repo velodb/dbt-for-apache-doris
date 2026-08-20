@@ -11,6 +11,7 @@ Apache Doris through the Doris MySQL protocol. It is maintained by the VeloDB
 community.
 
 **[Installation](#installation)** · **[Quickstart](#quickstart)** ·
+**[Examples](#end-to-end-examples)** ·
 **[Compatibility](#compatibility)** ·
 **[PyPI](https://pypi.org/project/dbt-for-apache-doris/)** ·
 **[dbt docs](https://docs.getdbt.com/)** ·
@@ -143,6 +144,17 @@ dbt build
 
 On Windows PowerShell, set the password with
 `$env:DORIS_PASSWORD = '<your-password>'`, then run the same dbt commands.
+
+## End-to-end examples
+
+The [`examples/doris-demos`](examples/doris-demos/README.md) directory contains
+five runnable Doris projects and a guided Jupyter Notebook covering Table,
+View, Seed, Data Test, cross-database Source, incremental `merge`, Snapshot,
+and Async MV workflows.
+
+Follow the [examples quick start](examples/doris-demos/README.md#run-the-jupyter-notebook)
+to configure Doris, create the pinned dbt environment, start JupyterLab, and
+execute all five demos.
 
 ## Doris-specific highlights
 
