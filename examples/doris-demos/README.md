@@ -46,6 +46,48 @@ the final Doris rows step by step.
 Each demo recreates only its dedicated `dbt_demo_*` databases. Do not use those
 database names for production data.
 
+## What each demo does
+
+### 1. Daily order summary
+
+This demo turns a small order table into a daily sales report. It filters out
+cancelled, returned, and failed orders, groups the remaining orders by date,
+and then builds a monthly summary from the daily table. The result shows a
+dbt Table, Doris partitioning and bucketing, data tests, and an Async MV
+working together.
+
+### 2. Customer geographic analysis
+
+This demo answers a reporting question: how many customers and orders does
+each state have, and how much revenue do they represent? Customer addresses
+and orders live in separate Doris databases, so the project declares two
+Sources, creates two staging Views, and joins them with `ref()`. The final
+Table contains one row per state.
+
+### 3. Advertising consolidation
+
+This demo combines Google, Meta, and TikTok advertising exports into one
+consistent table. The three CSV files have slightly different column names and
+one duplicate row, so dbt Seed loads the files, staging models normalize the
+columns and remove duplicates, and a final model unions the channels. It shows
+Seed, package macros, `QUALIFY`, and a uniqueness test.
+
+### 4. Late-arriving orders
+
+This demo models an order-event stream where an updated version can arrive
+after the first load. The first run writes the current version of three
+orders; the second run receives a correction for order 101 and a new order
+104. An incremental model with `unique_key='order_id'` and Doris Unique Key
+merge keeps one current row per order, and a third run confirms idempotency.
+
+### 5. Customer Snapshot
+
+This demo keeps a history of customer changes. The first Snapshot run records
+Alice and Bob, then the fixture updates Alice and deletes Bob before the second
+run. dbt Snapshot closes the old versions and writes the new state, while a
+dimension model selects the current customer rows. The final result shows SCD
+Type 2 history and hard-delete handling in Doris.
+
 ## Run the Jupyter Notebook
 
 Run all commands from the repository root.
