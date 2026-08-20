@@ -5,8 +5,8 @@ dbt project is compiled and executed on Apache Doris, and how the adapter maps
 dbt concepts to Doris databases, Tables, Views, Unique Key tables, Snapshots,
 and Async Materialized Views.
 
-They are standalone examples, not a benchmark runner. Each example owns its
-small Doris fixture and can be run independently. The shell scripts are the
+This is a standalone Doris dbt demo suite. Each example owns its small Doris
+fixture and can be run independently. The shell scripts are the
 repeatable path; the Jupyter Notebook presents the same work as an interactive
 walkthrough.
 
@@ -33,7 +33,7 @@ The five examples cover the adapter behaviors most users need to see first:
 
 The Notebook makes each arrow in the flow visible. It shows the input rows,
 the dbt file being used, the intermediate relation, the Data Test result, and
-the final Doris rows instead of hiding everything behind one command.
+the final Doris rows step by step.
 
 | Demo | What it demonstrates | Main dbt and Doris capabilities |
 | --- | --- | --- |

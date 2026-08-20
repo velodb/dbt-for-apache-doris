@@ -62,7 +62,7 @@ platform boundaries are described alongside each capability.
 | dbt Core | `>=1.12,<1.13` | Declared lower bound is 1.12.0; Python dbt Core v1 only. Fusion/v2 compatibility is not claimed |
 | MySQL connector | `>=8.0.33` | Installed automatically with the adapter |
 | Apache Doris | No package-wide minimum is declared | Validate the adapter against the Doris release and topology used in production |
-| Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate is not a whole-adapter compatibility guarantee. Identifiable source builds are accepted for development testing only |
+| Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate applies to Async MV. Identifiable source builds are accepted for development testing only |
 | VeloDB | No release range is declared | Validate the adapter against the VeloDB release and topology used in production |
 
 Before production use, validate the adapter against your exact database release
