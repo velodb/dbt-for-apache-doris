@@ -65,6 +65,98 @@ DEMO_STEPS = {
 
 STYLES = """
 <style>
+.doris-cover {
+  max-width: 960px;
+  border-top: 4px solid #0f766e;
+  padding: 22px 0 18px;
+  margin: 0 0 24px;
+}
+.doris-cover-kicker {
+  color: #0f766e;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.doris-cover-title {
+  color: #17212b;
+  font-size: 30px;
+  line-height: 1.2;
+  font-weight: 750;
+  margin: 0 0 8px;
+}
+.doris-cover-lead {
+  color: #475569;
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: 780px;
+  margin: 0;
+}
+.doris-cover-note {
+  display: inline-block;
+  border: 1px solid #99f6e4;
+  border-radius: 4px;
+  background: #f0fdfa;
+  color: #115e59;
+  padding: 6px 10px;
+  margin-top: 14px;
+  font-size: 12px;
+}
+.doris-index {
+  width: 100%;
+  max-width: 960px;
+  border-collapse: collapse;
+  margin: 14px 0 6px;
+  font-size: 13px;
+}
+.doris-index th {
+  background: #f1f5f9;
+  border-bottom: 2px solid #cbd5e1;
+  color: #334155;
+  padding: 9px 10px;
+  text-align: left;
+}
+.doris-index td {
+  border-bottom: 1px solid #e2e8f0;
+  color: #475569;
+  padding: 10px;
+  vertical-align: top;
+}
+.doris-index tbody tr:hover { background: #f8fafc; }
+.doris-index-number {
+  color: #0f766e;
+  font-size: 16px;
+  font-weight: 750;
+  width: 44px;
+}
+.doris-index-name { color: #17212b; font-weight: 700; }
+.doris-flow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px;
+  max-width: 960px;
+  margin: 16px 0 22px;
+}
+.doris-flow-step {
+  flex: 1 1 145px;
+  border: 1px solid #dbe4e8;
+  border-left: 3px solid #0f766e;
+  border-radius: 4px;
+  background: #f8fbfb;
+  color: #334155;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.doris-flow-step strong { color: #17212b; display: block; margin-bottom: 2px; }
+.doris-flow-arrow {
+  align-self: center;
+  color: #94a3b8;
+  font-size: 18px;
+  line-height: 1;
+}
 .doris-status {
   border: 1px solid #d9dee5;
   border-left: 4px solid #6b7280;
@@ -89,8 +181,15 @@ STYLES = """
   color: #334155;
 }
 .doris-result { margin: 10px 0 18px; }
+.doris-result-final {
+  border-left: 3px solid #0f766e;
+  background: #f0fdfa;
+  padding: 10px 12px 2px;
+  max-width: 920px;
+}
 .doris-result-title { font-size: 14px; font-weight: 650; margin: 0 0 6px; color: #18212f; }
 .doris-result-count { color: #64748b; font-size: 12px; font-weight: 400; margin-left: 6px; }
+.doris-result-table-wrap { overflow-x: auto; }
 table.doris-table { border-collapse: collapse; width: auto; min-width: 420px; font-size: 13px; }
 table.doris-table th {
   background: #eef2f6;
@@ -145,6 +244,13 @@ details.doris-log pre {
   padding: 12px;
   font-size: 11px;
   line-height: 1.45;
+}
+@media (max-width: 700px) {
+  .doris-cover-title { font-size: 24px; }
+  .doris-flow-arrow { display: none; }
+  .doris-flow-step { flex-basis: 100%; }
+  table.doris-index { font-size: 12px; }
+  .doris-index th:nth-child(3), .doris-index td:nth-child(3) { display: none; }
 }
 </style>
 """
@@ -437,12 +543,15 @@ class DemoRunner:
             "<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in row) + "</tr>"
             for row in data
         )
+        final_markers = ("最终结果", "输出：", "merge 后", "刷新后的", "第二次 Snapshot", "幂等")
+        result_class = " doris-result-final" if title.startswith(final_markers) else ""
         display(
             HTML(
-                '<div class="doris-result">'
+                f'<div class="doris-result{result_class}">'
                 f'<div class="doris-result-title">{html.escape(title)}'
                 f'<span class="doris-result-count">{len(data)} 行</span></div>'
+                '<div class="doris-result-table-wrap">'
                 f'<table class="doris-table"><thead><tr>{header_html}</tr></thead>'
-                f'<tbody>{body_html}</tbody></table></div>'
+                f'<tbody>{body_html}</tbody></table></div></div>'
             )
         )
