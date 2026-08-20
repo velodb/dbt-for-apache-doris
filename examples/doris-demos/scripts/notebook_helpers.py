@@ -17,7 +17,7 @@ DBT_SUMMARY = re.compile(
 )
 
 DEMO_STEPS = {
-    "data-eng-bench-daily-order-summary": [
+    "doris-daily-order-summary": [
         ("准备 Doris fixture", "创建 ORDERS 源表并写入演示订单"),
         ("dbt debug", "检查 Doris 连接、profile 和 project"),
         ("首次 dbt build", "创建 daily_order_summary 表并执行列级测试"),
@@ -26,14 +26,14 @@ DEMO_STEPS = {
         ("刷新 dbt run", "重复运行，确认物化视图可刷新"),
         ("verifier", "校验行数、金额、日期唯一性和最终对象"),
     ],
-    "data-eng-bench-doris-demos/geographic": [
+    "doris-demos/geographic": [
         ("准备 Doris fixture", "创建 ORDERS 和 CUSTOMERS 源表"),
         ("dbt debug", "检查跨 Database Source 配置"),
         ("首次 dbt build", "创建两个 staging view 和 customer_geographic 表"),
         ("幂等 dbt build", "再次构建，确认 ref 链路可重复执行"),
         ("verifier", "校验州级客户数、收入和空值处理"),
     ],
-    "data-eng-bench-doris-demos/consolidate": [
+    "doris-demos/consolidate": [
         ("准备 Doris fixture", "创建渠道源表和三个 seed 输入"),
         ("dbt debug", "检查 project、profile 和 package 配置"),
         ("dbt deps", "安装 dbt_utils 依赖"),
@@ -41,7 +41,7 @@ DEMO_STEPS = {
         ("幂等 dbt build", "再次构建，确认 QUALIFY 和唯一键逻辑"),
         ("verifier", "校验三渠道去重、字段映射和结果行数"),
     ],
-    "data-eng-bench-doris-demos/incremental": [
+    "doris-demos/incremental": [
         ("准备 Doris fixture", "创建订单源表和初始销售数据"),
         ("dbt debug", "检查 incremental project 配置"),
         ("首次 dbt build", "建立订单当前版本表"),
@@ -50,7 +50,7 @@ DEMO_STEPS = {
         ("无变化 dbt build", "再次运行，确认幂等和去重"),
         ("verifier", "校验当前版本、唯一键和金额结果"),
     ],
-    "data-eng-bench-doris-demos/snapshot": [
+    "doris-demos/snapshot": [
         ("准备 Doris fixture", "创建 CUSTOMERS 源表和初始客户数据"),
         ("dbt debug", "检查 snapshot 配置和 Doris 连接"),
         ("staging dbt run", "创建客户 staging view"),

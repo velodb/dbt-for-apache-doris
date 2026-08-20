@@ -14,8 +14,8 @@ fail() {
 
 make_fixture() {
   local fixture_root=$1
-  local daily_runner=$fixture_root/data-eng-bench-daily-order-summary/scripts/run.sh
-  local suite_root=$fixture_root/data-eng-bench-doris-demos
+  local daily_runner=$fixture_root/doris-daily-order-summary/scripts/run.sh
+  local suite_root=$fixture_root/doris-demos
 
   mkdir -p "$(dirname "$daily_runner")" "$suite_root/scripts"
   cp "$source_runner" "$suite_root/scripts/run-all.sh"
@@ -81,8 +81,8 @@ MYSQL
 }
 
 credential_scripts=(
-  "$script_dir/../../data-eng-bench-daily-order-summary/scripts/run.sh"
-  "$script_dir/../../data-eng-bench-daily-order-summary/scripts/verify.sh"
+  "$script_dir/../../doris-daily-order-summary/scripts/run.sh"
+  "$script_dir/../../doris-daily-order-summary/scripts/verify.sh"
   "$script_dir/../geographic/scripts/run.sh"
   "$script_dir/../geographic/scripts/verify.sh"
   "$script_dir/../consolidate/scripts/run.sh"
@@ -110,7 +110,7 @@ run_fixture() {
   MYSQL_BIN=$fixture_root/bin/mysql \
   DORIS_PASSWORD=secret \
   DEMO_RESULTS_DIR=$fixture_root/results \
-    "$fixture_root/data-eng-bench-doris-demos/scripts/run-all.sh" "$@"
+    "$fixture_root/doris-demos/scripts/run-all.sh" "$@"
 }
 
 fixture=$test_root/success

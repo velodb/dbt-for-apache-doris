@@ -2,7 +2,7 @@
 set -euo pipefail
 
 demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-notebook="$demo_dir/dbt-for-apache-doris-data-eng-bench-demos.ipynb"
+notebook="$demo_dir/dbt-for-apache-doris-demos.ipynb"
 jupyter_port=${JUPYTER_PORT:-18888}
 
 : "${DBT_BIN:?Set DBT_BIN to the dbt Core executable with dbt-for-apache-doris installed.}"

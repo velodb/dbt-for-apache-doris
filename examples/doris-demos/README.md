@@ -1,6 +1,6 @@
-# data-eng-bench Doris demos
+# Doris dbt demos
 
-这组示例把 `data-eng-bench` 中的四类 dbt 行为改成可独立运行的 Doris 项目：
+这组示例把四类常见 dbt 数据工程行为实现成可独立运行的 Doris 项目：
 
 | 目录 | 演示内容 | 主要 dbt 对象 |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ Doris database，不依赖其他 demo 的表。
 ```bash
 export DBT_BIN=/path/to/dbt
 export DORIS_PORT=19030
-cd examples/data-eng-bench-doris-demos
+cd examples/doris-demos
 ./geographic/scripts/run.sh
 ```
 
@@ -34,30 +34,30 @@ cd examples/data-eng-bench-doris-demos
 如需使用仓库提供的固定版本环境，从仓库根目录执行：
 
 ```bash
-examples/data-eng-bench-doris-demos/scripts/prepare-python-env.sh
-export DBT_BIN="$PWD/examples/data-eng-bench-doris-demos/.venv/bin/dbt"
+examples/doris-demos/scripts/prepare-python-env.sh
+export DBT_BIN="$PWD/examples/doris-demos/.venv/bin/dbt"
 ```
 
 该脚本固定 Python 3.12.13、dbt Core 1.12.2 和 `dbt-for-apache-doris` 1.1.0。
 
 ## 运行 Jupyter Notebook
 
-[`dbt-for-apache-doris-data-eng-bench-demos.ipynb`](dbt-for-apache-doris-data-eng-bench-demos.ipynb)
+[`dbt-for-apache-doris-demos.ipynb`](dbt-for-apache-doris-demos.ipynb)
 把每日订单 Demo 和本目录中的四个 Demo 组织成 5 个可依次执行的分步流程。
 
 不要把示例中的 `/path/to/dbt` 原样设置为 `DBT_BIN`。先在仓库根目录创建固定版本环境，
 并安装 JupyterLab：
 
 ```bash
-INSTALL_JUPYTER=1 examples/data-eng-bench-doris-demos/scripts/prepare-python-env.sh
-source examples/data-eng-bench-doris-demos/.venv/bin/activate
+INSTALL_JUPYTER=1 examples/doris-demos/scripts/prepare-python-env.sh
+source examples/doris-demos/.venv/bin/activate
 
-export DBT_BIN="$PWD/examples/data-eng-bench-doris-demos/.venv/bin/dbt"
+export DBT_BIN="$PWD/examples/doris-demos/.venv/bin/dbt"
 export DORIS_HOST=127.0.0.1
 export DORIS_PORT=9030
 export JUPYTER_PORT=18888
 
-examples/data-eng-bench-doris-demos/scripts/start-notebook.sh
+examples/doris-demos/scripts/start-notebook.sh
 ```
 
 启动脚本会启动 JupyterLab 并输出带 token 的访问地址，在浏览器中打开该地址即可。

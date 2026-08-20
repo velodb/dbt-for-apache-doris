@@ -3,7 +3,7 @@ set -euo pipefail
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 demo_dir=$(cd "$script_dir/.." && pwd)
-daily_demo_dir=$(cd "$demo_dir/../data-eng-bench-daily-order-summary" && pwd)
+daily_demo_dir=$(cd "$demo_dir/../doris-daily-order-summary" && pwd)
 
 dbt_bin=${DBT_BIN:-$demo_dir/.venv/bin/dbt}
 mysql_bin=${MYSQL_BIN:-mysql}
@@ -23,7 +23,7 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [--dry-run]
 
-Run all five data-eng-bench Doris demos serially and keep durable logs.
+Run all five Doris dbt demos serially and keep durable logs.
 
 Environment overrides:
   DBT_BIN              dbt executable (default: $demo_dir/.venv/bin/dbt)

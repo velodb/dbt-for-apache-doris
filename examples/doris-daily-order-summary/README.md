@@ -1,7 +1,6 @@
-# data-eng-bench 每日订单汇总 Doris Demo
+# Doris 每日订单汇总 Demo
 
-这个示例来自 `data-eng-bench` 的 `dbt-daily-order-summary` 任务。它用一张订单源表
-创建每日订单汇总 Table，并在其上创建一个 Doris 异步物化视图。
+这个示例用一张订单源表创建每日订单汇总 Table，并在其上创建一个 Doris 异步物化视图。
 
 执行后会创建：
 
@@ -25,7 +24,7 @@ Demo database，请勿将它们用于业务数据。
 默认连接 `127.0.0.1:9030`。如果 Doris FE 使用 19030 端口：
 
 ```bash
-cd examples/data-eng-bench-daily-order-summary
+cd examples/doris-daily-order-summary
 DORIS_PORT=19030 ./scripts/run.sh
 ```
 
@@ -45,13 +44,13 @@ DORIS_PORT=19030 DBT_BIN=/path/to/venv/bin/dbt ./scripts/run.sh
 迟到订单增量和 Snapshot 五个 Demo：
 
 ```bash
-examples/data-eng-bench-doris-demos/scripts/prepare-python-env.sh
+examples/doris-demos/scripts/prepare-python-env.sh
 DORIS_PORT=19030 \
-  examples/data-eng-bench-doris-demos/scripts/run-all.sh
+  examples/doris-demos/scripts/run-all.sh
 ```
 
 每次执行的环境信息、逐 Demo 日志和 `summary.tsv` 都保存在
-`examples/data-eng-bench-doris-demos/artifacts/<run-id>/`。如果要使用其他结果目录，设置
+`examples/doris-demos/artifacts/<run-id>/`。如果要使用其他结果目录，设置
 `DEMO_RESULTS_DIR`。
 
 预期每日结果：
