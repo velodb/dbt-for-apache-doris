@@ -1,0 +1,16 @@
+name: consolidate_demo
+version: 1.0.0
+config-version: 2
+profile: consolidate_demo
+model-paths: [models]
+seed-paths: [seeds]
+
+models:
+  consolidate_demo:
+    +properties:
+      replication_num: "1"
+seeds:
+  consolidate_demo:
+    +quote_columns: false
+    +properties:
+      replication_num: "1"

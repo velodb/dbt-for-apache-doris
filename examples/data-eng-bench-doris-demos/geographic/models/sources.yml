@@ -1,0 +1,13 @@
+version: 2
+
+sources:
+  - name: customer_schema
+    database: dbt_demo_geographic_customer
+    schema: dbt_demo_geographic_customer
+    tables:
+      - name: CUSTOMER_ADDRESSES
+  - name: orders_schema
+    database: dbt_demo_geographic_orders
+    schema: dbt_demo_geographic_orders
+    tables:
+      - name: ORDERS
