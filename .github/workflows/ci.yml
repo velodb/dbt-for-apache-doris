@@ -76,6 +76,79 @@ jobs:
               )
           PY
 
+  examples-static:
+    name: Examples static checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check shell syntax
+        run: |
+          while IFS= read -r script; do
+            bash -n "$script"
+          done < <(git ls-files 'examples/**/*.sh')
+      - name: Test the examples runners
+        run: |
+          examples/doris-demos/scripts/test-run-all.sh
+          examples/doris-demos/scripts/test-start-doris.sh
+      - name: Check Notebook integrity
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          notebooks = sorted(
+              Path("examples/doris-demos/notebooks").glob("*.ipynb")
+          )
+          if len(notebooks) != 5:
+              raise SystemExit(f"expected 5 notebooks, found {len(notebooks)}")
+
+          errors = []
+          for notebook in notebooks:
+              try:
+                  document = json.loads(notebook.read_text(encoding="utf-8"))
+              except (OSError, json.JSONDecodeError) as error:
+                  errors.append(f"{notebook}: invalid JSON: {error}")
+                  continue
+
+              cells = document.get("cells")
+              if not isinstance(cells, list):
+                  errors.append(f"{notebook}: cells must be a list")
+                  continue
+
+              cell_ids = [cell.get("id") for cell in cells]
+              missing_ids = [
+                  index
+                  for index, cell_id in enumerate(cell_ids)
+                  if not isinstance(cell_id, str) or not cell_id
+              ]
+              if missing_ids:
+                  errors.append(
+                      f"{notebook}: cells without IDs at indexes {missing_ids}"
+                  )
+              present_ids = [cell_id for cell_id in cell_ids if cell_id]
+              if len(present_ids) != len(set(present_ids)):
+                  errors.append(f"{notebook}: cell IDs are not unique")
+
+              for index, cell in enumerate(cells):
+                  if cell.get("cell_type") != "code":
+                      continue
+                  if cell.get("outputs"):
+                      errors.append(f"{notebook}: cell {index} has outputs")
+                  if cell.get("execution_count") is not None:
+                      errors.append(
+                          f"{notebook}: cell {index} has an execution count"
+                      )
+
+          if errors:
+              raise SystemExit("\n".join(errors))
+          print(f"Validated {len(notebooks)} notebooks.")
+          PY
+      - name: Check Notebook helper syntax
+        run: python -m py_compile examples/doris-demos/scripts/notebook_helpers.py
+
   ci-success:
     name: CI Success
     # Stable aggregate gate. This is the only job that branch protection needs to
@@ -86,6 +159,7 @@ jobs:
     needs:
       - lint-and-unit
       - package
+      - examples-static
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

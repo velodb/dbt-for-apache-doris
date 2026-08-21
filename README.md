@@ -147,14 +147,16 @@ On Windows PowerShell, set the password with
 
 ## End-to-end examples
 
-The [`examples/doris-demos`](examples/doris-demos/README.md) directory contains
-five runnable Doris projects and five focused Jupyter Notebooks covering Table,
-View, Seed, Data Test, cross-database Source, incremental `merge`, Snapshot,
-and Async MV workflows.
+The [`examples`](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples)
+tree contains five runnable Doris projects: the daily order summary project at
+`examples/doris-daily-order-summary` and four projects under
+`examples/doris-demos`. Five focused Jupyter Notebooks cover Table, View, Seed,
+Data Test, cross-database Source, incremental `merge`, Snapshot, and Async MV
+workflows.
 
-Follow the [examples quick start](examples/doris-demos/README.md#run-the-jupyter-notebooks)
-to configure Doris, create the pinned dbt environment, start JupyterLab, and
-run any of the five demos.
+Follow the [examples quick start](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples/doris-demos#run-the-jupyter-notebooks)
+to configure Doris, create the pinned dbt environment, start JupyterLab, and run
+any of the five demos.
 
 ## Doris-specific highlights
 

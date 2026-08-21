@@ -30,7 +30,7 @@ table_ddl=$("$mysql_bin" "${mysql_args[@]}" -Nse "SHOW CREATE TABLE dbt_demo_dai
 [[ "$table_ddl" == *'DISTRIBUTED BY HASH(`order_date`) BUCKETS 1'* ]]
 
 mv_status=
-for _ in $(seq 1 60); do
+for ((attempt = 0; attempt < 60; attempt++)); do
   mv_status=$("$mysql_bin" "${mysql_args[@]}" -Nse "SELECT Status FROM tasks('type'='mv') WHERE MvDatabaseName = 'dbt_demo_daily' AND MvName = 'monthly_order_summary_mv' ORDER BY CreateTime DESC LIMIT 1")
   if [[ "$mv_status" == 'SUCCESS' ]]; then
     break

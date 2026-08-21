@@ -1,12 +1,12 @@
-name: data_eng_bench_daily_order_summary
+name: doris_daily_order_summary
 version: 1.0.0
 config-version: 2
-profile: data_eng_bench_daily_order_summary
+profile: doris_daily_order_summary
 
 model-paths: ["models"]
 
 models:
-  data_eng_bench_daily_order_summary:
+  doris_daily_order_summary:
     +materialized: table
     +properties:
       replication_num: "1"

@@ -10,5 +10,15 @@ https://github.com/apache/doris/tree/master/extension/dbt-doris
 Apache Doris
 Copyright 2018-2026 The Apache Software Foundation
 
+Portions of the examples in this product are adapted from data-eng-bench:
+https://github.com/Snowflake-Labs/data-eng-bench
+
+data-eng-bench
+Copyright 2026 Snowflake Inc.
+
+The benchmark tasks, dbt models, and verifiers from which those examples were
+adapted are original works authored by Snowflake. The adapted examples have
+been modified to use Apache Doris and dbt-for-apache-doris.
+
 This distribution is maintained by the VeloDB community and is not an official
 Apache Software Foundation release.

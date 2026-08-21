@@ -50,7 +50,15 @@ PY
 fi
 
 if [[ $reuse_venv == 0 ]]; then
-  "$uv_bin" venv "$venv_dir" --python "$python_version"
+  venv_args=()
+  if [[ -e $venv_dir || -L $venv_dir ]]; then
+    if [[ -L $venv_dir || ! -f $venv_dir/pyvenv.cfg ]]; then
+      echo "refusing to replace a directory that is not a virtual environment: $venv_dir" >&2
+      exit 1
+    fi
+    venv_args+=(--clear)
+  fi
+  "$uv_bin" venv "${venv_args[@]}" "$venv_dir" --python "$python_version"
   "$uv_bin" pip install \
     --link-mode copy \
     --python "$venv_dir/bin/python" \

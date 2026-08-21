@@ -22,6 +22,9 @@ The demo suite contains:
 demos serially, performs a Doris preflight, and writes durable logs and a
 `summary.tsv` under `examples/doris-demos/artifacts/`.
 
+Run only one demo process at a time. The fixtures use fixed `dbt_demo_*`
+database names and recreate them at the beginning of each run.
+
 ## Environment Discovery
 
 Run commands from the repository root. Resolve tools in this order:
@@ -49,11 +52,20 @@ DORIS_USER=root
 DORIS_PASSWORD=
 ```
 
-Do not overwrite values the user already supplied. Verify the endpoint with:
+Do not overwrite values the user already supplied. Verify the endpoint without
+putting the password in process arguments or inheriting an unrelated
+`MYSQL_PWD` value:
 
 ```bash
-mysql -h "$DORIS_HOST" -P "$DORIS_PORT" -u "$DORIS_USER" \
-  -e 'select sum(number) from numbers("number"="10")'
+if [[ -n ${DORIS_PASSWORD:-} ]]; then
+  MYSQL_PWD="$DORIS_PASSWORD" mysql \
+    -h "$DORIS_HOST" -P "$DORIS_PORT" -u "$DORIS_USER" \
+    -e 'select sum(number) from numbers("number"="10")'
+else
+  (unset MYSQL_PWD; mysql \
+    -h "$DORIS_HOST" -P "$DORIS_PORT" -u "$DORIS_USER" \
+    -e 'select sum(number) from numbers("number"="10")')
+fi
 ```
 
 The result must be `45`. The Doris user must be able to create, drop, and
@@ -62,36 +74,27 @@ modify the dedicated `dbt_demo_*` databases used by the examples.
 ## Starting Doris When Needed
 
 If the configured endpoint is unavailable and Docker is available, use the
-official all-in-one image as an isolated demo runtime. Do not stop or remove
-an existing Doris container or cluster. Reuse a healthy demo container if one
-already exists; otherwise choose an unused container name and host port.
+official all-in-one image as an isolated demo runtime. Use the checked launcher
+so every port stays bound to `127.0.0.1`, container conflicts fail without
+deletion, and health waiting has a timeout with diagnostics.
 
 The standard fallback is:
 
 ```bash
-export DORIS_CONTAINER_NAME=dbt-doris-demo-agent
-export DORIS_IMAGE=apache/doris:all-in-one-4.1.3
 export DORIS_HOST=127.0.0.1
-export DORIS_PORT=29030
-export DORIS_USER=root
-export DORIS_PASSWORD=
-
-docker pull "$DORIS_IMAGE"
-docker run -d --name "$DORIS_CONTAINER_NAME" \
-  -p 29030:9030 \
-  -p 28030:8030 \
-  -p 28040:8040 \
-  "$DORIS_IMAGE"
-
-until [ "$(docker inspect -f '{{.State.Health.Status}}' "$DORIS_CONTAINER_NAME")" = healthy ]; do
-  sleep 1
-done
+export DORIS_PORT="${DORIS_PORT:-29030}"
+export DORIS_CONTAINER_NAME="${DORIS_CONTAINER_NAME:-dbt-doris-demo-agent}"
+examples/doris-demos/scripts/start-doris.sh
 ```
 
-After startup, repeat the SQL preflight. Use a native image for the host
-architecture when possible. If Docker is unavailable, image startup fails,
-or no port is free, ask the user for a reachable Doris FE endpoint instead of
-silently changing connection settings.
+The launcher accepts `DORIS_IMAGE`, `DORIS_PORT`, `DORIS_FE_HTTP_PORT`, and
+`DORIS_BE_HTTP_PORT` overrides. It reuses an existing container only when it
+is healthy and its image and port bindings match exactly. On a conflict,
+choose an unused container name and set of ports; never stop or remove the
+existing container. After startup, repeat the SQL preflight. Use a native
+image for the host architecture when possible. If Docker is unavailable,
+image startup fails, or no port is free, ask the user for a reachable Doris
+FE endpoint instead of silently changing connection settings.
 
 ## Running Demos
 
@@ -133,8 +136,6 @@ and do not claim that a notebook was executed unless its cells actually ran.
   repeatedly rerun a failing dbt model without inspecting its log.
 - A successful `dbt debug` is only a connection check. The demo is successful
   only when its dbt build/run/snapshot steps and verifier finish successfully.
-- Do not claim that the full upstream benchmark or unrelated tasks were run;
-  this workflow covers the five product demos only.
 - Do not modify demo SQL, profiles, fixtures, or adapter code while running.
   Make code changes only when the user explicitly asks for a fix.
 

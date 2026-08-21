@@ -2,7 +2,7 @@
 set -euo pipefail
 
 demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-dbt_bin=${DBT_BIN:-dbt}
+dbt_bin=${DBT_BIN:-$demo_dir/../doris-demos/.venv/bin/dbt}
 mysql_bin=${MYSQL_BIN:-mysql}
 doris_host=${DORIS_HOST:-127.0.0.1}
 doris_port=${DORIS_PORT:-9030}

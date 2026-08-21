@@ -1,4 +1,4 @@
-data_eng_bench_daily_order_summary:
+doris_daily_order_summary:
   target: dev
   outputs:
     dev:

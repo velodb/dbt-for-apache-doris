@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")/.."
-DBT_BIN="${DBT_BIN:-dbt}"
+project_dir=$(cd "$(dirname "$0")/.." && pwd)
+demo_dir=$(cd "$project_dir/.." && pwd)
+cd "$project_dir"
+DBT_BIN="${DBT_BIN:-$demo_dir/.venv/bin/dbt}"
 MYSQL_BIN="${MYSQL_BIN:-mysql}"
 DORIS_HOST="${DORIS_HOST:-127.0.0.1}"
 DORIS_PORT="${DORIS_PORT:-9030}"

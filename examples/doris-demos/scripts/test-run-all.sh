@@ -57,7 +57,11 @@ if [[ $* == *--password* || $* == *" -p"* ]]; then
   echo "password leaked through argv" >&2
   exit 91
 fi
-if [[ ${MYSQL_PWD:-} != secret ]]; then
+if [[ ${EXPECT_MYSQL_PWD_UNSET:-0} == 1 && -n ${MYSQL_PWD+x} ]]; then
+  echo "stale MYSQL_PWD was not cleared" >&2
+  exit 92
+fi
+if [[ ${EXPECT_MYSQL_PWD_UNSET:-0} != 1 && ${MYSQL_PWD:-} != secret ]]; then
   echo "password was not passed through MYSQL_PWD" >&2
   exit 92
 fi
@@ -104,11 +108,13 @@ done
 
 run_fixture() {
   local fixture_root=$1
+  local test_password=${TEST_DORIS_PASSWORD-secret}
   shift
   DEMO_MARKER=$fixture_root/marker \
   DBT_BIN=$fixture_root/bin/dbt \
   MYSQL_BIN=$fixture_root/bin/mysql \
-  DORIS_PASSWORD=secret \
+  DORIS_PASSWORD=$test_password \
+  EXPECT_MYSQL_PWD_UNSET=${EXPECT_MYSQL_PWD_UNSET:-0} \
   DEMO_RESULTS_DIR=$fixture_root/results \
     "$fixture_root/doris-demos/scripts/run-all.sh" "$@"
 }
@@ -121,6 +127,14 @@ run_fixture "$fixture" >/dev/null
   fail "success summary does not contain five passed demos"
 grep -Fq 'Using a password' "$fixture/results/environment.txt" || \
   fail "preflight stderr was not preserved"
+
+fixture=$test_root/stale-password
+make_fixture "$fixture"
+MYSQL_PWD=stale \
+TEST_DORIS_PASSWORD= \
+EXPECT_MYSQL_PWD_UNSET=1 \
+  run_fixture "$fixture" >/dev/null
+[[ $(wc -l <"$fixture/marker") == 5 ]] || fail "password cleanup run did not execute five demos"
 
 fixture=$test_root/retry
 make_fixture "$fixture"
@@ -182,6 +196,28 @@ cat >"$fake_uv" <<'UV'
 exit 99
 UV
 chmod +x "$fake_uv"
+
+repair_venv=$test_root/repair-venv
+mkdir -p "$repair_venv"
+touch "$repair_venv/pyvenv.cfg"
+repair_uv=$test_root/repair-uv
+repair_args=$test_root/repair-uv-args
+cat >"$repair_uv" <<'UV'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$REPAIR_UV_ARGS"
+exit 77
+UV
+chmod +x "$repair_uv"
+set +e
+REPAIR_UV_ARGS=$repair_args \
+DBT_DEMO_VENV=$repair_venv \
+UV_BIN=$repair_uv \
+  "$source_prepare" >/dev/null 2>&1
+status=$?
+set -e
+[[ $status == 77 ]] || fail "repair venv did not invoke uv"
+grep -Fxq -- '--clear' "$repair_args" || fail "repair venv did not pass --clear"
+
 set +e
 DBT_DEMO_PYTHON_VERSION=3.12 UV_BIN=$fake_uv "$source_prepare" >/dev/null 2>&1
 status=$?

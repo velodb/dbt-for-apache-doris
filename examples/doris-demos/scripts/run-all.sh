@@ -154,6 +154,9 @@ printf 'demo\tstatus\tduration_seconds\tlog\n' >"$summary_file"
 mysql_args=(-h "$doris_host" -P "$doris_port" -u "$doris_user")
 preflight_stdout=$results_dir/preflight.stdout
 preflight_stderr=$results_dir/preflight.stderr
+if [[ -z $doris_password ]]; then
+  unset MYSQL_PWD
+fi
 
 ready_deadline=$((SECONDS + ready_timeout_seconds))
 backend_status=1

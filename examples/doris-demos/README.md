@@ -44,7 +44,8 @@ the final Doris rows step by step.
 | [Customer Snapshot](notebooks/05-customer-snapshot.ipynb) | What did each customer record look like over time, and which version is current now? | SCD Type 2 history and current customer dimension | Snapshot, hard-delete tracking, current dimension |
 
 Each demo recreates only its dedicated `dbt_demo_*` databases. Do not use those
-database names for production data.
+database names for production data. Run one demo process at a time because the
+fixtures use fixed database names and are recreated at the start of a run.
 
 ## What each demo does
 
@@ -99,6 +100,7 @@ Before starting a Notebook, prepare:
   pinned Python 3.12.13 environment.
 - A MySQL-compatible command-line client. Doris uses the MySQL protocol for
   fixture setup and result queries.
+- Docker, when using the optional all-in-one Doris image.
 - An Apache Doris endpoint. Use an existing FE with at least one healthy BE,
   or start the optional all-in-one Docker image below. The FE query port must
   be reachable from the machine running dbt.
@@ -121,32 +123,34 @@ demo suite because the examples use one replica and create their own
 `dbt_demo_*` databases. The image does not persist data unless you add a
 volume.
 
-The following commands keep the Docker instance separate from a Doris cluster
-that may already be using port `9030`:
+The launcher publishes every port on `127.0.0.1` and keeps the Docker instance
+separate from a Doris cluster that may already use port `9030`:
 
 ```bash
-export DORIS_CONTAINER_NAME=dbt-doris-demo
+export DORIS_PORT="${DORIS_PORT:-29030}"
+examples/doris-demos/scripts/start-doris.sh
+```
+
+`start-doris.sh` pulls `apache/doris:all-in-one-4.1.3` when it needs to create
+a container, waits up to 180 seconds for its health check, and prints useful
+container logs when startup fails. It never stops or removes an existing
+container. A container named `dbt-doris-demo` is reused only when it is
+healthy and its image and three loopback port bindings match. Otherwise the
+script exits with the existing container unchanged.
+
+Continue with **Configure the Doris connection** below; its defaults use the
+local all-in-one user and preserve the `DORIS_PORT` selected here.
+
+Override the container, image, or host ports before running the launcher when
+the defaults are already in use:
+
+```bash
+export DORIS_CONTAINER_NAME=dbt-doris-demo-2
 export DORIS_IMAGE=apache/doris:all-in-one-4.1.3
-export DORIS_PORT=29030
-
-docker pull "$DORIS_IMAGE"
-docker rm -f "$DORIS_CONTAINER_NAME" 2>/dev/null || true
-docker run -d --name "$DORIS_CONTAINER_NAME" \
-  -p 29030:9030 \
-  -p 28030:8030 \
-  -p 28040:8040 \
-  "$DORIS_IMAGE"
-
-until [ "$(docker inspect -f '{{.State.Health.Status}}' "$DORIS_CONTAINER_NAME")" = healthy ]; do
-  sleep 1
-done
-
-export DORIS_HOST=127.0.0.1
-export DORIS_PORT=29030
-export DORIS_USER=root
-export DORIS_PASSWORD=''
-mysql -h "$DORIS_HOST" -P "$DORIS_PORT" -u "$DORIS_USER" \
-  -e 'SHOW BACKENDS'
+export DORIS_PORT=39030
+export DORIS_FE_HTTP_PORT=38030
+export DORIS_BE_HTTP_PORT=38040
+examples/doris-demos/scripts/start-doris.sh
 ```
 
 The all-in-one image is multi-architecture. Use a native image for the host
@@ -154,8 +158,8 @@ architecture when possible, especially on Apple Silicon. Stop and remove the
 demo container after use:
 
 ```bash
-docker stop "$DORIS_CONTAINER_NAME"
-docker rm "$DORIS_CONTAINER_NAME"
+docker stop "${DORIS_CONTAINER_NAME:-dbt-doris-demo}"
+docker rm "${DORIS_CONTAINER_NAME:-dbt-doris-demo}"
 ```
 
 ## Run the Jupyter Notebooks
@@ -249,6 +253,10 @@ To run one demo, invoke its script directly. For example:
 ```bash
 examples/doris-demos/geographic/scripts/run.sh
 ```
+
+The single-demo runners automatically use
+`examples/doris-demos/.venv/bin/dbt`. Set `DBT_BIN` only to use a different
+dbt installation; activating the virtual environment is not required.
 
 Each demo directory contains:
 

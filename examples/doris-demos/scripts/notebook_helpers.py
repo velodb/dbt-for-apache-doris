@@ -16,53 +16,6 @@ DBT_SUMMARY = re.compile(
     r"Done\. PASS=(\d+) WARN=(\d+) ERROR=(\d+) SKIP=(\d+) .*? TOTAL=(\d+)"
 )
 
-DEMO_STEPS = {
-    "doris-daily-order-summary": [
-        ("准备 Doris fixture", "创建 ORDERS 源表并写入演示订单"),
-        ("dbt debug", "检查 Doris 连接、profile 和 project"),
-        ("首次 dbt build", "创建 daily_order_summary 表并执行列级测试"),
-        ("幂等 dbt build", "再次构建，确认结果稳定且不重复"),
-        ("首次 dbt run", "创建 monthly_order_summary_mv 物化视图"),
-        ("刷新 dbt run", "重复运行，确认物化视图可刷新"),
-        ("verifier", "校验行数、金额、日期唯一性和最终对象"),
-    ],
-    "doris-demos/geographic": [
-        ("准备 Doris fixture", "创建 ORDERS 和 CUSTOMERS 源表"),
-        ("dbt debug", "检查跨 Database Source 配置"),
-        ("首次 dbt build", "创建两个 staging view 和 customer_geographic 表"),
-        ("幂等 dbt build", "再次构建，确认 ref 链路可重复执行"),
-        ("verifier", "校验州级客户数、收入和空值处理"),
-    ],
-    "doris-demos/consolidate": [
-        ("准备 Doris fixture", "创建渠道源表和三个 seed 输入"),
-        ("dbt debug", "检查 project、profile 和 package 配置"),
-        ("dbt deps", "安装 dbt_utils 依赖"),
-        ("首次 dbt build", "加载 seed、创建 staging view 和统一明细表"),
-        ("幂等 dbt build", "再次构建，确认 QUALIFY 和唯一键逻辑"),
-        ("verifier", "校验三渠道去重、字段映射和结果行数"),
-    ],
-    "doris-demos/incremental": [
-        ("准备 Doris fixture", "创建订单源表和初始销售数据"),
-        ("dbt debug", "检查 incremental project 配置"),
-        ("首次 dbt build", "建立订单当前版本表"),
-        ("写入迟到数据", "插入新订单并更新已有订单"),
-        ("增量 dbt build", "用 merge 合并新增和变更记录"),
-        ("无变化 dbt build", "再次运行，确认幂等和去重"),
-        ("verifier", "校验当前版本、唯一键和金额结果"),
-    ],
-    "doris-demos/snapshot": [
-        ("准备 Doris fixture", "创建 CUSTOMERS 源表和初始客户数据"),
-        ("dbt debug", "检查 snapshot 配置和 Doris 连接"),
-        ("staging dbt run", "创建客户 staging view"),
-        ("首次 dbt snapshot", "写入 SCD Type 2 初始版本"),
-        ("首次维表 build", "生成当前客户维表并执行测试"),
-        ("变更源数据", "更新客户属性并删除一条客户记录"),
-        ("第二次 dbt snapshot", "记录变更版本和 hard delete"),
-        ("刷新维表", "重新生成当前状态维表并执行测试"),
-        ("verifier", "校验历史版本、当前状态和删除记录"),
-    ],
-}
-
 STYLES = """
 <style>
 .doris-cover {
@@ -200,23 +153,6 @@ table.doris-table th {
 }
 table.doris-table td { border: 1px solid #d9dee5; padding: 7px 10px; }
 table.doris-table tbody tr:nth-child(even) { background: #f8fafc; }
-.doris-process { margin: 8px 0 16px; }
-.doris-process-title { font-size: 14px; font-weight: 650; margin: 0 0 6px; color: #18212f; }
-table.doris-process-table { border-collapse: collapse; width: 100%; max-width: 920px; font-size: 13px; }
-table.doris-process-table th {
-  background: #eef2f6;
-  border: 1px solid #cbd5e1;
-  color: #1f2937;
-  padding: 7px 10px;
-  text-align: left;
-}
-table.doris-process-table td { border: 1px solid #d9dee5; padding: 7px 10px; vertical-align: top; }
-table.doris-process-table tbody tr:nth-child(even) { background: #f8fafc; }
-.doris-step-status { white-space: nowrap; font-weight: 600; }
-.doris-step-status.pending { color: #64748b; }
-.doris-step-status.running { color: #b45309; }
-.doris-step-status.success { color: #16803c; }
-.doris-step-status.failure { color: #c62828; }
 .doris-code { margin: 8px 0 16px; max-width: 920px; }
 .doris-code-title { font-size: 14px; font-weight: 650; margin: 0 0 6px; color: #18212f; }
 .doris-code pre {
@@ -291,6 +227,8 @@ class DemoRunner:
         )
         if self.env["DORIS_PASSWORD"]:
             self.env["MYSQL_PWD"] = self.env["DORIS_PASSWORD"]
+        else:
+            self.env.pop("MYSQL_PWD", None)
         display(HTML(STYLES))
 
     def _run(self, command, cwd=None):
@@ -417,104 +355,81 @@ class DemoRunner:
         path = Path(path)
         self._run_step(title, [str(path)], cwd=path.parent.parent)
 
-    @staticmethod
-    def _process_table(steps, statuses):
-        status_labels = {
-            "pending": "待执行",
-            "running": "执行中",
-            "success": "已完成",
-            "failure": "失败",
-        }
-        rows = "".join(
-            "<tr>"
-            f"<td>{index}</td>"
-            f"<td><strong>{html.escape(label)}</strong><br><span>{html.escape(description)}</span></td>"
-            f'<td class="doris-step-status {status}">{status_labels[status]}</td>'
-            "</tr>"
-            for index, ((label, description), status) in enumerate(zip(steps, statuses), 1)
-        )
-        return HTML(
-            '<div class="doris-process">'
-            '<div class="doris-process-title">执行过程</div>'
-            '<table class="doris-process-table"><thead><tr>'
-            '<th style="width: 48px">序号</th><th>阶段</th><th style="width: 90px">状态</th>'
-            f"</tr></thead><tbody>{rows}</tbody></table></div>"
-        )
-
     def show_environment(self):
-        result = self._run([self.dbt_bin, "--version"])
-        if result.returncode != 0:
-            display(self._status("failure", "环境检查失败", ["dbt --version", f"exit {result.returncode}"]))
-            display(self._log_details(result.stdout, opened=True))
+        version_result = self._run([self.dbt_bin, "--version"])
+        if version_result.returncode != 0:
+            display(
+                self._status(
+                    "failure",
+                    "环境检查失败",
+                    ["dbt --version", f"exit {version_result.returncode}"],
+                )
+            )
+            display(self._log_details(version_result.stdout, opened=True))
             raise RuntimeError("dbt 环境检查失败。")
 
-        installed = re.search(r"installed:\s*([^\s]+)", clean_log(result.stdout))
+        installed = re.search(r"installed:\s*([^\s]+)", clean_log(version_result.stdout))
         dbt_version = installed.group(1) if installed else "可执行"
+
+        daily_project = self.examples_root / "doris-daily-order-summary"
+        debug_result = self._run(
+            [
+                self.dbt_bin,
+                "debug",
+                "--project-dir",
+                str(daily_project),
+                "--profiles-dir",
+                str(daily_project),
+            ],
+            cwd=daily_project,
+        )
+        if debug_result.returncode != 0:
+            display(
+                self._status(
+                    "failure",
+                    "环境检查失败",
+                    ["dbt debug", f"exit {debug_result.returncode}"],
+                )
+            )
+            display(self._log_details(debug_result.stdout, opened=True))
+            raise RuntimeError("dbt Doris adapter 或连接检查失败。")
+
+        adapter_match = re.search(
+            r"(?:adapter version:\s*|Registered adapter:\s*doris=)([^\s]+)",
+            clean_log(debug_result.stdout),
+        )
+        adapter_version = adapter_match.group(1) if adapter_match else "已加载"
+
+        backend_rows = self.query(
+            "Doris Backend",
+            "show backends",
+            columns=["Host", "Alive", "Version", "TabletNum"],
+        )
+        if not any(row[1].lower() == "true" for row in backend_rows):
+            display(self._status("failure", "环境检查失败", ["没有 Alive=true 的 Backend"]))
+            raise RuntimeError("Doris Backend 未就绪。")
+
+        query_rows = self.query(
+            "Doris BE 查询",
+            'select sum(number) as result from numbers("number"="10")',
+            columns=["result"],
+        )
+        if query_rows != [["45"]]:
+            display(self._status("failure", "环境检查失败", ["BE 查询结果不正确"]))
+            raise RuntimeError("Doris Backend 查询检查失败。")
+
         display(
             self._status(
                 "success",
                 "执行环境已就绪",
                 [
                     f"dbt Core {dbt_version}",
+                    f"Doris adapter {adapter_version}",
                     f"Doris {self.env['DORIS_HOST']}:{self.env['DORIS_PORT']}",
                     f"Repository {self.repo_root.name}",
                 ],
             )
         )
-        self.query(
-            "Doris Backend",
-            "show backends",
-            columns=["Host", "Alive", "Version", "TabletNum"],
-        )
-
-    def run_demo(self, title, relative_path):
-        project_dir = self.examples_root / relative_path
-        run_script = project_dir / "scripts/run.sh"
-        if not run_script.is_file():
-            raise FileNotFoundError(run_script)
-
-        steps = DEMO_STEPS.get(
-            relative_path,
-            [("执行 Demo 脚本", "运行 fixture、dbt 和 verifier"), ("查看结果", "读取 Doris 最终结果")],
-        )
-        process_handle = display(
-            self._process_table(steps, ["running"] + ["pending"] * (len(steps) - 1)),
-            display_id=True,
-        )
-        handle = display(
-            self._status("running", f"正在运行：{title}", ["准备 fixture", "执行 dbt", "运行 verifier"]),
-            display_id=True,
-        )
-        started = time.perf_counter()
-        result = self._run([str(run_script)], cwd=project_dir)
-        elapsed = time.perf_counter() - started
-        summaries = DBT_SUMMARY.findall(clean_log(result.stdout))
-        passed = sum(int(summary[0]) for summary in summaries)
-        errors = sum(int(summary[2]) for summary in summaries)
-
-        if result.returncode != 0:
-            process_handle.update(
-                self._process_table(steps, ["success"] * max(0, len(steps) - 1) + ["failure"])
-            )
-            handle.update(
-                self._status(
-                    "failure",
-                    f"运行失败：{title}",
-                    [f"{elapsed:.1f} 秒", f"exit {result.returncode}", f"dbt errors {errors}"],
-                )
-            )
-            display(self._log_details(result.stdout, opened=True))
-            raise RuntimeError(f"{title} 执行失败。")
-
-        handle.update(
-            self._status(
-                "success",
-                f"运行通过：{title}",
-                [f"{elapsed:.1f} 秒", f"{len(summaries)} 个 dbt 阶段", f"{passed} 个成功节点", "verifier 通过"],
-            )
-        )
-        process_handle.update(self._process_table(steps, ["success"] * len(steps)))
-        display(self._log_details(result.stdout))
 
     def query(self, title, sql, columns=None):
         result = self._run(self._mysql_command(sql))
@@ -526,7 +441,7 @@ class DemoRunner:
         rows = list(csv.reader(StringIO(result.stdout), delimiter="\t"))
         if not rows:
             display(self._status("success", title, ["0 行"]))
-            return
+            return []
 
         headers = rows[0]
         data = rows[1:]
@@ -555,3 +470,4 @@ class DemoRunner:
                 f'<tbody>{body_html}</tbody></table></div></div>'
             )
         )
+        return data
