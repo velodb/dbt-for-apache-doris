@@ -2,7 +2,7 @@
 set -euo pipefail
 
 demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-notebook="$demo_dir/dbt-for-apache-doris-demos.ipynb"
+notebook_dir="$demo_dir/notebooks"
 jupyter_port=${JUPYTER_PORT:-18888}
 
 : "${DBT_BIN:?Set DBT_BIN to the dbt Core executable with dbt-for-apache-doris installed.}"
@@ -20,14 +20,15 @@ fi
 export DBT_BIN
 
 echo "Starting the Jupyter server on 127.0.0.1:$jupyter_port"
-echo "Keep this process running and open the URL printed by JupyterLab."
+echo "Keep this process running and select a demo from the notebooks directory."
 
 jupyter_args=(
-  "$notebook"
   --no-browser
   --ip=127.0.0.1
   --port="$jupyter_port"
   --ServerApp.port_retries=0
+  --ServerApp.root_dir="$notebook_dir"
+  --ServerApp.default_url=/lab/tree
 )
 
 if command -v jupyter-lab >/dev/null 2>&1; then

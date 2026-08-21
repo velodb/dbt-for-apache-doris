@@ -6,9 +6,9 @@ dbt concepts to Doris databases, Tables, Views, Unique Key tables, Snapshots,
 and Async Materialized Views.
 
 This is a standalone Doris dbt demo suite. Each example owns its small Doris
-fixture and can be run independently. The shell scripts are the
-repeatable path; the Jupyter Notebook presents the same work as an interactive
-walkthrough.
+fixture and can be run independently. The shell scripts are the repeatable
+path; five focused Jupyter Notebooks present the same work as interactive
+walkthroughs.
 
 ## What the examples show
 
@@ -31,17 +31,17 @@ The five examples cover the adapter behaviors most users need to see first:
 - how `incremental` with `unique_key` applies a late correction through Doris Unique Key merge;
 - how Snapshot records an update and a hard delete as SCD Type 2 history.
 
-The Notebook makes each arrow in the flow visible. It shows the input rows,
+Each Notebook makes every arrow in one flow visible. It shows the input rows,
 the dbt file being used, the intermediate relation, the Data Test result, and
 the final Doris rows step by step.
 
 | Demo | What it demonstrates | Main dbt and Doris capabilities |
 | --- | --- | --- |
-| Daily order summary | Filter and aggregate orders by day and month | Source, Table, Data Test, partitioning, bucketing, Async MV |
-| Customer geographic analysis | Join customer addresses and orders by state | Cross-database Source, View, Table, `ref()` |
-| Advertising consolidation | Load and normalize three advertising CSV files | Seed, `dbt_utils`, `QUALIFY`, Data Test |
-| Late-arriving orders | Insert a corrected order version and a new order | Incremental `merge`, Unique Key, idempotency |
-| Customer Snapshot | Track an update and hard delete over time | Snapshot, SCD Type 2, current dimension |
+| [Daily order summary](notebooks/01-daily-order-summary.ipynb) | Filter and aggregate orders by day and month | Source, Table, Data Test, partitioning, bucketing, Async MV |
+| [Customer geographic analysis](notebooks/02-customer-geographic-analysis.ipynb) | Join customer addresses and orders by state | Cross-database Source, View, Table, `ref()` |
+| [Advertising consolidation](notebooks/03-advertising-consolidation.ipynb) | Load and normalize three advertising CSV files | Seed, `dbt_utils`, `QUALIFY`, Data Test |
+| [Late-arriving orders](notebooks/04-late-arriving-orders.ipynb) | Insert a corrected order version and a new order | Incremental `merge`, Unique Key, idempotency |
+| [Customer Snapshot](notebooks/05-customer-snapshot.ipynb) | Track an update and hard delete over time | Snapshot, SCD Type 2, current dimension |
 
 Each demo recreates only its dedicated `dbt_demo_*` databases. Do not use those
 database names for production data.
@@ -88,7 +88,7 @@ run. dbt Snapshot closes the old versions and writes the new state, while a
 dimension model selects the current customer rows. The final result shows SCD
 Type 2 history and hard-delete handling in Doris.
 
-## Run the Jupyter Notebook
+## Run the Jupyter Notebooks
 
 Run all commands from the repository root.
 
@@ -128,7 +128,7 @@ The setup script creates an isolated environment with Python 3.12.13, dbt Core
 1.12.2, and `dbt-for-apache-doris` 1.1.0. Re-running it reuses a matching
 environment.
 
-### 3. Start the Notebook
+### 3. Start JupyterLab
 
 ```bash
 export JUPYTER_PORT=18888
@@ -142,16 +142,18 @@ example:
 http://127.0.0.1:18888/lab?token=...
 ```
 
-Open that URL in a browser. The server opens
-[`dbt-for-apache-doris-demos.ipynb`](dbt-for-apache-doris-demos.ipynb).
+Open that URL in a browser. JupyterLab opens the `notebooks/` directory with
+five numbered Notebook files. Start with any Demo; each file includes its own
+environment check, fixture setup, dbt execution, Doris queries, and verifier.
 
 ### 4. Execute the demos
 
-1. Run the first **Check the execution environment** cell. It loads the visual
+1. Open one of the five numbered Notebook files.
+2. Run the first **Check the execution environment** cell. It loads the visual
    styles and verifies dbt and Doris.
-2. Use **Run All** to execute all five demos, or run the numbered cells in order
-   to inspect every transformation step.
-3. Expand **View full run log** only when you need the compiled dbt details.
+3. Use **Run All** to execute that Demo, or run the numbered cells in order to
+   inspect every transformation step.
+4. Expand **View full run log** only when you need the compiled dbt details.
 
 Stop JupyterLab with `Ctrl+C` in the terminal that started it.
 
@@ -180,4 +182,4 @@ Each demo directory contains:
 - `scripts/setup.sql`: creates the small Doris fixture;
 - `scripts/run.sh`: executes dbt and the verifier;
 - `scripts/verify.sh`: checks the Doris relations and expected data;
-- `models/`, `seeds/`, or `snapshots/`: the dbt project shown in the Notebook.
+- `models/`, `seeds/`, or `snapshots/`: the dbt project shown in its Notebook.

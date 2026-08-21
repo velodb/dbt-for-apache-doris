@@ -148,13 +148,13 @@ On Windows PowerShell, set the password with
 ## End-to-end examples
 
 The [`examples/doris-demos`](examples/doris-demos/README.md) directory contains
-five runnable Doris projects and a guided Jupyter Notebook covering Table,
+five runnable Doris projects and five focused Jupyter Notebooks covering Table,
 View, Seed, Data Test, cross-database Source, incremental `merge`, Snapshot,
 and Async MV workflows.
 
-Follow the [examples quick start](examples/doris-demos/README.md#run-the-jupyter-notebook)
+Follow the [examples quick start](examples/doris-demos/README.md#run-the-jupyter-notebooks)
 to configure Doris, create the pinned dbt environment, start JupyterLab, and
-execute all five demos.
+run any of the five demos.
 
 ## Doris-specific highlights
 
