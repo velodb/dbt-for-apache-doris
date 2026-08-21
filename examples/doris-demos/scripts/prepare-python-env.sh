@@ -77,6 +77,6 @@ PY
 "$venv_dir/bin/dbt" --version
 
 printf '\nEnvironment ready. Run all demos with:\n'
-printf '  DBT_BIN=%q %q\n' \
-  "$venv_dir/bin/dbt" \
-  "$script_dir/run-all.sh"
+printf '  %q\n' "$script_dir/run-all.sh"
+printf 'Start JupyterLab with:\n'
+printf '  %q\n' "$script_dir/start-notebook.sh"

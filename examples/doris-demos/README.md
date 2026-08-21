@@ -191,20 +191,22 @@ Install [`uv`](https://docs.astral.sh/uv/) and a MySQL client first, then run:
 
 ```bash
 INSTALL_JUPYTER=1 examples/doris-demos/scripts/prepare-python-env.sh
-source examples/doris-demos/.venv/bin/activate
-export DBT_BIN="$PWD/examples/doris-demos/.venv/bin/dbt"
 ```
 
 The setup script creates an isolated environment with Python 3.12.13, dbt Core
 1.12.2, and `dbt-for-apache-doris` 1.1.0. Re-running it reuses a matching
-environment.
+environment. The Notebook and command-line runners use the executables in
+this environment automatically. Set `DBT_BIN` only when using a custom dbt
+installation.
 
 ### 3. Start JupyterLab
 
 ```bash
-export JUPYTER_PORT=18888
 examples/doris-demos/scripts/start-notebook.sh
 ```
+
+The default port is `18888`. Set `JUPYTER_PORT` before the command when that
+port is already in use.
 
 Keep this terminal running. JupyterLab prints a URL containing a token, for
 example:
@@ -233,8 +235,6 @@ Stop JupyterLab with `Ctrl+C` in the terminal that started it.
 The same five demos can run without JupyterLab:
 
 ```bash
-source examples/doris-demos/.venv/bin/activate
-export DBT_BIN="$PWD/examples/doris-demos/.venv/bin/dbt"
 examples/doris-demos/scripts/run-all.sh
 ```
 

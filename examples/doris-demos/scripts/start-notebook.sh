@@ -4,20 +4,20 @@ set -euo pipefail
 demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 notebook_dir="$demo_dir/notebooks"
 jupyter_port=${JUPYTER_PORT:-18888}
+dbt_bin=${DBT_BIN:-$demo_dir/.venv/bin/dbt}
 
-: "${DBT_BIN:?Set DBT_BIN to the dbt Core executable with dbt-for-apache-doris installed.}"
-
-if [[ "$DBT_BIN" == "/path/to/dbt" ]]; then
+if [[ "$dbt_bin" == "/path/to/dbt" ]]; then
   echo "DBT_BIN still contains the example placeholder /path/to/dbt." >&2
   exit 2
 fi
 
-if [[ ! -x "$DBT_BIN" ]]; then
-  echo "DBT_BIN is not executable: $DBT_BIN" >&2
+if [[ ! -x "$dbt_bin" ]]; then
+  echo "dbt executable is not available: $dbt_bin" >&2
+  echo "run $demo_dir/scripts/prepare-python-env.sh first or set DBT_BIN" >&2
   exit 2
 fi
 
-export DBT_BIN
+export DBT_BIN="$dbt_bin"
 
 echo "Starting the Jupyter server on 127.0.0.1:$jupyter_port"
 echo "Keep this process running and select a demo from the notebooks directory."
@@ -30,6 +30,10 @@ jupyter_args=(
   --ServerApp.root_dir="$notebook_dir"
   --ServerApp.default_url=/lab/tree
 )
+
+if [[ -x "$demo_dir/.venv/bin/jupyter-lab" ]]; then
+  exec "$demo_dir/.venv/bin/jupyter-lab" "${jupyter_args[@]}"
+fi
 
 if command -v jupyter-lab >/dev/null 2>&1; then
   exec jupyter-lab "${jupyter_args[@]}"
