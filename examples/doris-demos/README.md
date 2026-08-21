@@ -88,6 +88,29 @@ run. dbt Snapshot closes the old versions and writes the new state, while a
 dimension model selects the current customer rows. The final result shows SCD
 Type 2 history and hard-delete handling in Doris.
 
+## Prerequisites
+
+Before starting a Notebook, prepare:
+
+- A checkout of this repository and a Bash-compatible shell.
+- [`uv`](https://docs.astral.sh/uv/), used by the setup script to create the
+  pinned Python 3.12.13 environment.
+- A MySQL-compatible command-line client. Doris uses the MySQL protocol for
+  fixture setup and result queries.
+- A running Apache Doris FE and at least one healthy BE. The FE query port
+  must be reachable from the machine running dbt; the default is
+  `127.0.0.1:9030`.
+- A Doris user that can create, drop, and modify the dedicated `dbt_demo_*`
+  databases and their tables, views, materialized views, and snapshots.
+
+The setup script installs dbt Core 1.12.2, `dbt-for-apache-doris` 1.1.0, and
+JupyterLab. The advertising Demo also runs `dbt deps` to install `dbt_utils`,
+so the first setup needs access to the configured Python and package sources.
+
+For a remote server, run dbt and JupyterLab on the server or on a machine that
+can reach Doris. Use SSH port forwarding when the Notebook is opened from a
+local browser.
+
 ## Run the Jupyter Notebooks
 
 Run all commands from the repository root.
