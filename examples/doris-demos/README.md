@@ -97,9 +97,9 @@ Before starting a Notebook, prepare:
   pinned Python 3.12.13 environment.
 - A MySQL-compatible command-line client. Doris uses the MySQL protocol for
   fixture setup and result queries.
-- A running Apache Doris FE and at least one healthy BE. The FE query port
-  must be reachable from the machine running dbt; the default is
-  `127.0.0.1:9030`.
+- An Apache Doris endpoint. Use an existing FE with at least one healthy BE,
+  or start the optional all-in-one Docker image below. The FE query port must
+  be reachable from the machine running dbt.
 - A Doris user that can create, drop, and modify the dedicated `dbt_demo_*`
   databases and their tables, views, materialized views, and snapshots.
 
@@ -110,6 +110,51 @@ so the first setup needs access to the configured Python and package sources.
 For a remote server, run dbt and JupyterLab on the server or on a machine that
 can reach Doris. Use SSH port forwarding when the Notebook is opened from a
 local browser.
+
+### Optional: start Doris with the all-in-one Docker image
+
+The official [Apache Doris all-in-one image](https://doris.apache.org/community/developer-guide/all-in-one-image/)
+packages one FE and one BE in a single container. It is convenient for this
+demo suite because the examples use one replica and create their own
+`dbt_demo_*` databases. The image does not persist data unless you add a
+volume.
+
+The following commands keep the Docker instance separate from a Doris cluster
+that may already be using port `9030`:
+
+```bash
+export DORIS_CONTAINER_NAME=dbt-doris-demo
+export DORIS_IMAGE=apache/doris:all-in-one-4.1.3
+export DORIS_PORT=29030
+
+docker pull "$DORIS_IMAGE"
+docker rm -f "$DORIS_CONTAINER_NAME" 2>/dev/null || true
+docker run -d --name "$DORIS_CONTAINER_NAME" \
+  -p 29030:9030 \
+  -p 28030:8030 \
+  -p 28040:8040 \
+  "$DORIS_IMAGE"
+
+until [ "$(docker inspect -f '{{.State.Health.Status}}' "$DORIS_CONTAINER_NAME")" = healthy ]; do
+  sleep 1
+done
+
+export DORIS_HOST=127.0.0.1
+export DORIS_PORT=29030
+export DORIS_USER=root
+export DORIS_PASSWORD=''
+mysql -h "$DORIS_HOST" -P "$DORIS_PORT" -u "$DORIS_USER" \
+  -e 'SHOW BACKENDS'
+```
+
+The all-in-one image is multi-architecture. Use a native image for the host
+architecture when possible, especially on Apple Silicon. Stop and remove the
+demo container after use:
+
+```bash
+docker stop "$DORIS_CONTAINER_NAME"
+docker rm "$DORIS_CONTAINER_NAME"
+```
 
 ## Run the Jupyter Notebooks
 
