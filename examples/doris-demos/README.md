@@ -23,25 +23,25 @@ Doris source table or CSV
         -> Doris verifier and result query
 ```
 
-The five examples cover the adapter behaviors most users need to see first:
+The five examples start with common analytics and data engineering requests:
 
-- how a Table model becomes a Doris table with partitioning, bucketing, and properties;
-- how multiple Doris databases are declared as dbt Sources and connected with `ref()`;
-- how CSV data is loaded with Seed and transformed with a package macro;
-- how `incremental` with `unique_key` applies a late correction through Doris Unique Key merge;
-- how Snapshot records an update and a hard delete as SCD Type 2 history.
+- give sales and finance a trusted daily and monthly revenue summary;
+- show regional teams where customers, orders, and revenue are concentrated;
+- give growth teams one consistent dataset for three advertising channels;
+- keep current order reporting accurate when corrections arrive late;
+- preserve customer attribute history while serving a current customer view.
 
 Each Notebook makes every arrow in one flow visible. It shows the input rows,
 the dbt file being used, the intermediate relation, the Data Test result, and
 the final Doris rows step by step.
 
-| Demo | What it demonstrates | Main dbt and Doris capabilities |
-| --- | --- | --- |
-| [Daily order summary](notebooks/01-daily-order-summary.ipynb) | Filter and aggregate orders by day and month | Source, Table, Data Test, partitioning, bucketing, Async MV |
-| [Customer geographic analysis](notebooks/02-customer-geographic-analysis.ipynb) | Join customer addresses and orders by state | Cross-database Source, View, Table, `ref()` |
-| [Advertising consolidation](notebooks/03-advertising-consolidation.ipynb) | Load and normalize three advertising CSV files | Seed, `dbt_utils`, `QUALIFY`, Data Test |
-| [Late-arriving orders](notebooks/04-late-arriving-orders.ipynb) | Insert a corrected order version and a new order | Incremental `merge`, Unique Key, idempotency |
-| [Customer Snapshot](notebooks/05-customer-snapshot.ipynb) | Track an update and hard delete over time | Snapshot, SCD Type 2, current dimension |
+| Demo | Business question | Delivered dataset | Main dbt and Doris capabilities |
+| --- | --- | --- | --- |
+| [Daily order summary](notebooks/01-daily-order-summary.ipynb) | How many valid orders and how much valid-order revenue did we record each day and month? | Daily sales table and monthly summary MV | Source, Table, Data Test, partitioning, bucketing, Async MV |
+| [Customer geographic analysis](notebooks/02-customer-geographic-analysis.ipynb) | Which states concentrate our customers, valid orders, revenue, and order frequency? | One state-level customer and sales table | Cross-database Source, View, Table, `ref()` |
+| [Advertising consolidation](notebooks/03-advertising-consolidation.ipynb) | How can growth analysts compare Google, Meta, and TikTok exports with one schema? | Deduplicated channel-by-day advertising table | Seed, `dbt_utils`, `QUALIFY`, Data Test |
+| [Late-arriving orders](notebooks/04-late-arriving-orders.ipynb) | How do current-order and revenue reports absorb delayed corrections without duplicate orders? | Current version of every order plus reconciliation models | Incremental `merge`, Unique Key, idempotency |
+| [Customer Snapshot](notebooks/05-customer-snapshot.ipynb) | What did each customer record look like over time, and which version is current now? | SCD Type 2 history and current customer dimension | Snapshot, hard-delete tracking, current dimension |
 
 Each demo recreates only its dedicated `dbt_demo_*` databases. Do not use those
 database names for production data.
@@ -50,43 +50,45 @@ database names for production data.
 
 ### 1. Daily order summary
 
-This demo turns a small order table into a daily sales report. It filters out
-cancelled, returned, and failed orders, groups the remaining orders by date,
-and then builds a monthly summary from the daily table. The result shows a
-dbt Table, Doris partitioning and bucketing, data tests, and an Async MV
-working together.
+Sales operations needs a daily report for order volume and valid-order
+revenue, while finance needs the same figures rolled up by month. Cancelled,
+returned, and failed orders are excluded from both measures. The project
+delivers `daily_order_summary` for daily reporting and
+`monthly_order_summary_mv` for the monthly dashboard, with tests protecting
+the date and revenue grain.
 
 ### 2. Customer geographic analysis
 
-This demo answers a reporting question: how many customers and orders does
-each state have, and how much revenue do they represent? Customer addresses
-and orders live in separate Doris databases, so the project declares two
-Sources, creates two staging Views, and joins them with `ref()`. The final
-Table contains one row per state.
+Regional operations wants to decide where to focus customer programs and
+sales coverage. The report uses each customer's default shipping state and
+only valid orders, then calculates customer count, order count, total revenue,
+average order value, revenue per customer, and orders per customer. The final
+table has one row per state and can feed a regional performance dashboard.
 
 ### 3. Advertising consolidation
 
-This demo combines Google, Meta, and TikTok advertising exports into one
-consistent table. The three CSV files have slightly different column names and
-one duplicate row, so dbt Seed loads the files, staging models normalize the
-columns and remove duplicates, and a final model unions the channels. It shows
-Seed, package macros, `QUALIFY`, and a uniqueness test.
+Growth analysts receive daily exports from Google, Meta, and TikTok, but the
+files use different column layouts and can contain duplicate rows. The project
+normalizes clicks, impressions, views, and conversions, removes exact
+duplicates, and adds a source label. The resulting channel-by-day table gives
+downstream campaign reporting one stable input contract.
 
 ### 4. Late-arriving orders
 
-This demo models an order-event stream where an updated version can arrive
-after the first load. The first run writes the current version of three
-orders; the second run receives a correction for order 101 and a new order
-104. An incremental model with `unique_key='order_id'` and Doris Unique Key
-merge keeps one current row per order, and a third run confirms idempotency.
+Order systems can deliver a correction days after the original event. Without
+version handling, the current-order table can duplicate an order or leave
+revenue understated. The first load records three orders; the next load
+changes order 101 from 100.00 to 125.00 and adds order 104. The project keeps
+one current row per order and refreshes the reporting and reconciliation
+models from the corrected state.
 
 ### 5. Customer Snapshot
 
-This demo keeps a history of customer changes. The first Snapshot run records
-Alice and Bob, then the fixture updates Alice and deletes Bob before the second
-run. dbt Snapshot closes the old versions and writes the new state, while a
-dimension model selects the current customer rows. The final result shows SCD
-Type 2 history and hard-delete handling in Doris.
+CRM and analytics teams need both the current customer record and an audit of
+how important attributes changed. The first load records Alice and Bob; the
+second changes Alice's email and customer type and removes Bob from the source.
+The Snapshot preserves the old versions, records when each version stopped
+being valid, and supplies a current customer dimension for operational use.
 
 ## Prerequisites
 
