@@ -166,11 +166,14 @@ The defaults connect to `root@127.0.0.1:9030` with an empty password. Override
 them when your Doris FE uses different connection settings:
 
 ```bash
-export DORIS_HOST=127.0.0.1
-export DORIS_PORT=9030
-export DORIS_USER=root
-export DORIS_PASSWORD=''
+export DORIS_HOST="${DORIS_HOST:-127.0.0.1}"
+export DORIS_PORT="${DORIS_PORT:-9030}"
+export DORIS_USER="${DORIS_USER:-root}"
+export DORIS_PASSWORD="${DORIS_PASSWORD:-}"
 ```
+
+If you started the optional all-in-one image above, these variables keep its
+mapped FE port (`29030`).
 
 Verify that the FE and at least one Backend are available:
 
