@@ -1,0 +1,12 @@
+geographic_demo:
+  target: dev
+  outputs:
+    dev:
+      type: doris
+      host: "{{ env_var('DORIS_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('DORIS_PORT', '9030') | int }}"
+      username: "{{ env_var('DORIS_USER', 'root') }}"
+      password: "{{ env_var('DORIS_PASSWORD', '') }}"
+      database: dbt_demo_geographic
+      schema: dbt_demo_geographic
+      threads: 2

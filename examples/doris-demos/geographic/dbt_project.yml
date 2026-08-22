@@ -1,0 +1,10 @@
+name: geographic_demo
+version: 1.0.0
+config-version: 2
+profile: geographic_demo
+model-paths: [models]
+
+models:
+  geographic_demo:
+    +properties:
+      replication_num: "1"
