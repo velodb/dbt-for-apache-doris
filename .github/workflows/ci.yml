@@ -148,6 +148,29 @@ jobs:
           PY
       - name: Check Notebook helper syntax
         run: python -m py_compile examples/doris-demos/scripts/notebook_helpers.py
+      - name: Check demo language
+        run: |
+          python - <<'PY'
+          import re
+          import subprocess
+          from pathlib import Path
+
+          chinese = re.compile(r"[\\u4e00-\\u9fff]")
+          files = subprocess.check_output(
+              ["git", "ls-files", "examples"], text=True
+          ).splitlines()
+          matches = []
+          for name in files:
+              path = Path(name)
+              if chinese.search(path.read_text(encoding="utf-8")):
+                  matches.append(name)
+          if matches:
+              raise SystemExit(
+                  "Chinese user-facing text found in demo files:\n"
+                  + "\n".join(matches)
+              )
+          print(f"Checked {len(files)} tracked example files.")
+          PY
 
   ci-success:
     name: CI Success

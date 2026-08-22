@@ -196,7 +196,7 @@ def find_repo_root(start):
     for candidate in (start, *start.parents):
         if (candidate / "examples").is_dir():
             return candidate
-    raise FileNotFoundError("请从 dbt-for-apache-doris 仓库目录或其子目录启动 Jupyter。")
+    raise FileNotFoundError("Start Jupyter from the dbt-for-apache-doris repository or a subdirectory.")
 
 
 def clean_log(output):
@@ -210,9 +210,9 @@ class DemoRunner:
         self.dbt_bin = os.environ.get("DBT_BIN") or shutil.which("dbt")
         self.mysql_bin = os.environ.get("MYSQL_BIN") or shutil.which("mysql")
         if not self.dbt_bin:
-            raise RuntimeError("找不到 dbt，请在启动 Jupyter 前设置 DBT_BIN。")
+            raise RuntimeError("dbt was not found. Run the environment setup first or set DBT_BIN.")
         if not self.mysql_bin:
-            raise RuntimeError("找不到 mysql，请安装 MySQL Client 或设置 MYSQL_BIN。")
+            raise RuntimeError("mysql was not found. Install a MySQL client or set MYSQL_BIN.")
 
         self.env = os.environ.copy()
         self.env.update(
@@ -273,7 +273,7 @@ class DemoRunner:
         open_attribute = " open" if opened else ""
         return HTML(
             f'<details class="doris-log"{open_attribute}>'
-            '<summary>查看完整运行日志</summary>'
+            '<summary>View full run log</summary>'
             f'<pre>{html.escape(clean_log(output))}</pre></details>'
         )
 
@@ -301,7 +301,7 @@ class DemoRunner:
 
     def _run_step(self, title, command, cwd=None):
         handle = display(
-            self._status("running", f"正在执行：{title}", ["命令运行中"]),
+            self._status("running", f"Running: {title}", ["Command in progress"]),
             display_id=True,
         )
         started = time.perf_counter()
@@ -314,21 +314,21 @@ class DemoRunner:
             handle.update(
                 self._status(
                     "failure",
-                    f"执行失败：{title}",
-                    [f"{elapsed:.1f} 秒", f"exit {result.returncode}"],
+                    f"Failed: {title}",
+                    [f"{elapsed:.1f} s", f"exit {result.returncode}"],
                 )
             )
             if output:
                 display(self._log_details(result.stdout, opened=True))
-            raise RuntimeError(f"{title} 执行失败。")
+            raise RuntimeError(f"{title} failed.")
 
-        chips = [f"{elapsed:.1f} 秒"]
+        chips = [f"{elapsed:.1f} s"]
         if summaries:
             passed = sum(int(summary[0]) for summary in summaries)
-            chips.extend([f"{passed} 个成功节点", "dbt 通过"])
+            chips.extend([f"{passed} successful nodes", "dbt passed"])
         else:
-            chips.append("执行成功")
-        handle.update(self._status("success", f"执行通过：{title}", chips))
+            chips.append("Succeeded")
+        handle.update(self._status("success", f"Passed: {title}", chips))
         if output:
             display(self._log_details(result.stdout))
 
@@ -361,15 +361,15 @@ class DemoRunner:
             display(
                 self._status(
                     "failure",
-                    "环境检查失败",
+                    "Environment check failed",
                     ["dbt --version", f"exit {version_result.returncode}"],
                 )
             )
             display(self._log_details(version_result.stdout, opened=True))
-            raise RuntimeError("dbt 环境检查失败。")
+            raise RuntimeError("dbt environment check failed.")
 
         installed = re.search(r"installed:\s*([^\s]+)", clean_log(version_result.stdout))
-        dbt_version = installed.group(1) if installed else "可执行"
+        dbt_version = installed.group(1) if installed else "available"
 
         daily_project = self.examples_root / "doris-daily-order-summary"
         debug_result = self._run(
@@ -387,18 +387,18 @@ class DemoRunner:
             display(
                 self._status(
                     "failure",
-                    "环境检查失败",
+                    "Environment check failed",
                     ["dbt debug", f"exit {debug_result.returncode}"],
                 )
             )
             display(self._log_details(debug_result.stdout, opened=True))
-            raise RuntimeError("dbt Doris adapter 或连接检查失败。")
+            raise RuntimeError("The dbt Doris adapter or connection check failed.")
 
         adapter_match = re.search(
             r"(?:adapter version:\s*|Registered adapter:\s*doris=)([^\s]+)",
             clean_log(debug_result.stdout),
         )
-        adapter_version = adapter_match.group(1) if adapter_match else "已加载"
+        adapter_version = adapter_match.group(1) if adapter_match else "loaded"
 
         backend_rows = self.query(
             "Doris Backend",
@@ -406,22 +406,22 @@ class DemoRunner:
             columns=["Host", "Alive", "Version", "TabletNum"],
         )
         if not any(row[1].lower() == "true" for row in backend_rows):
-            display(self._status("failure", "环境检查失败", ["没有 Alive=true 的 Backend"]))
-            raise RuntimeError("Doris Backend 未就绪。")
+            display(self._status("failure", "Environment check failed", ["No Alive=true Backend"]))
+            raise RuntimeError("The Doris Backend is not ready.")
 
         query_rows = self.query(
-            "Doris BE 查询",
+            "Doris BE query",
             'select sum(number) as result from numbers("number"="10")',
             columns=["result"],
         )
         if query_rows != [["45"]]:
-            display(self._status("failure", "环境检查失败", ["BE 查询结果不正确"]))
-            raise RuntimeError("Doris Backend 查询检查失败。")
+            display(self._status("failure", "Environment check failed", ["The BE query returned an unexpected result"]))
+            raise RuntimeError("The Doris Backend query check failed.")
 
         display(
             self._status(
                 "success",
-                "执行环境已就绪",
+                "Execution environment ready",
                 [
                     f"dbt Core {dbt_version}",
                     f"Doris adapter {adapter_version}",
@@ -434,13 +434,13 @@ class DemoRunner:
     def query(self, title, sql, columns=None):
         result = self._run(self._mysql_command(sql))
         if result.returncode != 0:
-            display(self._status("failure", f"查询失败：{title}", [f"exit {result.returncode}"]))
+            display(self._status("failure", f"Query failed: {title}", [f"exit {result.returncode}"]))
             display(self._log_details(result.stdout, opened=True))
-            raise RuntimeError(f"Doris 查询失败：{title}")
+            raise RuntimeError(f"Doris query failed: {title}")
 
         rows = list(csv.reader(StringIO(result.stdout), delimiter="\t"))
         if not rows:
-            display(self._status("success", title, ["0 行"]))
+            display(self._status("success", title, ["0 rows"]))
             return []
 
         headers = rows[0]
@@ -448,7 +448,7 @@ class DemoRunner:
         if columns:
             missing = [column for column in columns if column not in headers]
             if missing:
-                raise ValueError(f"查询结果缺少列：{', '.join(missing)}")
+                raise ValueError(f"Query result is missing columns: {', '.join(missing)}")
             indexes = [headers.index(column) for column in columns]
             headers = columns
             data = [[row[index] for index in indexes] for row in data]
@@ -458,13 +458,13 @@ class DemoRunner:
             "<tr>" + "".join(f"<td>{html.escape(value)}</td>" for value in row) + "</tr>"
             for row in data
         )
-        final_markers = ("最终结果", "输出：", "merge 后", "刷新后的", "第二次 Snapshot", "幂等")
+        final_markers = ("Final result", "Output:", "After merge", "After refresh", "Second Snapshot", "Idempotent")
         result_class = " doris-result-final" if title.startswith(final_markers) else ""
         display(
             HTML(
                 f'<div class="doris-result{result_class}">'
                 f'<div class="doris-result-title">{html.escape(title)}'
-                f'<span class="doris-result-count">{len(data)} 行</span></div>'
+                f'<span class="doris-result-count">{len(data)} rows</span></div>'
                 '<div class="doris-result-table-wrap">'
                 f'<table class="doris-table"><thead><tr>{header_html}</tr></thead>'
                 f'<tbody>{body_html}</tbody></table></div></div>'
