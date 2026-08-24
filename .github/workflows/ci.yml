@@ -155,7 +155,7 @@ jobs:
           import subprocess
           from pathlib import Path
 
-          chinese = re.compile(r"[\\u4e00-\\u9fff]")
+          chinese = re.compile(r"[\u4e00-\u9fff]")
           files = subprocess.check_output(
               ["git", "ls-files", "examples"], text=True
           ).splitlines()
