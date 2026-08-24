@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 project_dir=$(cd "$(dirname "$0")/.." && pwd)
-demo_dir=$(cd "$project_dir/.." && pwd)
+examples_dir=$(cd "$project_dir/.." && pwd)
+suite_dir=$examples_dir/doris-demos
 cd "$project_dir"
-DBT_BIN="${DBT_BIN:-$demo_dir/.venv/bin/dbt}"
+DBT_BIN="${DBT_BIN:-$suite_dir/.venv/bin/dbt}"
 MYSQL_BIN="${MYSQL_BIN:-mysql}"
 DORIS_HOST="${DORIS_HOST:-127.0.0.1}"
 DORIS_PORT="${DORIS_PORT:-9030}"

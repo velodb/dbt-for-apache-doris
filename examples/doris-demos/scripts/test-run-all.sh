@@ -21,14 +21,14 @@ make_fixture() {
   cp "$source_runner" "$suite_root/scripts/run-all.sh"
   chmod +x "$suite_root/scripts/run-all.sh"
 
-  for name in geographic consolidate incremental snapshot; do
-    mkdir -p "$suite_root/$name/scripts"
-    cat >"$suite_root/$name/scripts/run.sh" <<'RUNNER'
+  for name in doris-customer-geographic-analysis doris-advertising-consolidation doris-late-arriving-orders doris-customer-snapshot; do
+    mkdir -p "$fixture_root/$name/scripts"
+    cat >"$fixture_root/$name/scripts/run.sh" <<'RUNNER'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$(basename "$(dirname "$(dirname "$0")")")" >>"$DEMO_MARKER"
 RUNNER
-    chmod +x "$suite_root/$name/scripts/run.sh"
+    chmod +x "$fixture_root/$name/scripts/run.sh"
   done
 
   cat >"$daily_runner" <<'RUNNER'
@@ -87,14 +87,14 @@ MYSQL
 credential_scripts=(
   "$script_dir/../../doris-daily-order-summary/scripts/run.sh"
   "$script_dir/../../doris-daily-order-summary/scripts/verify.sh"
-  "$script_dir/../geographic/scripts/run.sh"
-  "$script_dir/../geographic/scripts/verify.sh"
-  "$script_dir/../consolidate/scripts/run.sh"
-  "$script_dir/../consolidate/scripts/verify.sh"
-  "$script_dir/../incremental/scripts/run.sh"
-  "$script_dir/../incremental/scripts/verify.sh"
-  "$script_dir/../snapshot/scripts/run.sh"
-  "$script_dir/../snapshot/scripts/verify.sh"
+  "$script_dir/../../doris-customer-geographic-analysis/scripts/run.sh"
+  "$script_dir/../../doris-customer-geographic-analysis/scripts/verify.sh"
+  "$script_dir/../../doris-advertising-consolidation/scripts/run.sh"
+  "$script_dir/../../doris-advertising-consolidation/scripts/verify.sh"
+  "$script_dir/../../doris-late-arriving-orders/scripts/run.sh"
+  "$script_dir/../../doris-late-arriving-orders/scripts/verify.sh"
+  "$script_dir/../../doris-customer-snapshot/scripts/run.sh"
+  "$script_dir/../../doris-customer-snapshot/scripts/verify.sh"
 )
 for credential_script in "${credential_scripts[@]}"; do
   grep -Fq 'export MYSQL_PWD="$DORIS_PASSWORD"' "$credential_script" || \

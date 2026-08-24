@@ -1,10 +1,14 @@
 # Agent Instructions
 
-This repository contains five runnable Apache Doris dbt demos under
-`examples/doris-demos/`. When a user asks to run, verify, or demonstrate the
+This repository contains a Doris demo entry point at `examples/doris-demos/`
+and five runnable Apache Doris dbt projects under `examples/`. When a user asks to run, verify, or demonstrate the
 Doris dbt examples, follow this workflow. The default objective is to execute
 the real dbt project against Doris and report the result; do not replace the
 run with a static review.
+
+`examples/doris-demos/README.md` and `examples/doris-demos/notebooks/` are the
+user-facing entry point. The five sibling project directories and shared
+runner scripts are implementation details.
 
 ## Demo Scope
 
@@ -13,10 +17,10 @@ The demo suite contains:
 | User-facing demo | Capability | Runner |
 | --- | --- | --- |
 | Daily order summary | Source, table model, data tests, partitioning, bucketing, async MV | `examples/doris-demos/scripts/run-all.sh` or `examples/doris-daily-order-summary/scripts/run.sh` |
-| Customer geographic analysis | Cross-database sources, staging views, `ref()` and table model | `examples/doris-demos/geographic/scripts/run.sh` |
-| Advertising consolidation | Seeds, `dbt_utils`, `QUALIFY` and uniqueness test | `examples/doris-demos/consolidate/scripts/run.sh` |
-| Late-arriving orders | Incremental model, `unique_key`, Doris Unique Key merge and idempotency | `examples/doris-demos/incremental/scripts/run.sh` |
-| Customer snapshot | Snapshot, SCD Type 2, hard-delete handling and current dimension | `examples/doris-demos/snapshot/scripts/run.sh` |
+| Customer geographic analysis | Cross-database sources, staging views, `ref()` and table model | `examples/doris-customer-geographic-analysis/scripts/run.sh` |
+| Advertising consolidation | Seeds, `dbt_utils`, `QUALIFY` and uniqueness test | `examples/doris-advertising-consolidation/scripts/run.sh` |
+| Late-arriving orders | Incremental model, `unique_key`, Doris Unique Key merge and idempotency | `examples/doris-late-arriving-orders/scripts/run.sh` |
+| Customer snapshot | Snapshot, SCD Type 2, hard-delete handling and current dimension | `examples/doris-customer-snapshot/scripts/run.sh` |
 
 `run-all.sh` is the default non-interactive acceptance path. It runs all five
 demos serially, performs a Doris preflight, and writes durable logs and a
@@ -111,11 +115,10 @@ Wait for the command to finish and report the final `summary.tsv` status and
 the artifact directory. A successful run must say `All five demos passed` and
 contain five `passed` rows.
 
-For a single demo, use the matching runner from the table above. The daily
-summary project is kept in the sibling directory
-`examples/doris-daily-order-summary/`; `run-all.sh` handles that path for the
-user-facing suite. Run a single demo only when the user requests it or when
-isolating a failure.
+For a single demo, use the matching runner from the table above. All five
+projects are sibling directories under `examples/`; `run-all.sh` handles their
+paths for the user-facing suite. Run a single demo only when the user requests
+it or when isolating a failure.
 
 For an interactive walkthrough, start JupyterLab after the environment is
 ready:

@@ -28,6 +28,7 @@ jupyter_args=(
   --ServerApp.port_retries=0
   --ServerApp.root_dir="$demo_dir"
   --ServerApp.default_url=/lab/tree
+  --ContentsManager.hide_globs='["scripts", "artifacts", ".venv", ".ipynb_checkpoints", "__pycache__", "*.pyc", "*.pyo", "*.user.yml", ".DS_Store", "*~"]'
 )
 
 if [[ -x "$demo_dir/.venv/bin/jupyter-lab" ]]; then

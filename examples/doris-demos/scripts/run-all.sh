@@ -60,10 +60,10 @@ done
 
 demos=(
   "daily-order-summary:$daily_demo_dir/scripts/run.sh"
-  "geographic:$demo_dir/geographic/scripts/run.sh"
-  "consolidate:$demo_dir/consolidate/scripts/run.sh"
-  "incremental:$demo_dir/incremental/scripts/run.sh"
-  "snapshot:$demo_dir/snapshot/scripts/run.sh"
+  "geographic:$demo_dir/../doris-customer-geographic-analysis/scripts/run.sh"
+  "consolidate:$demo_dir/../doris-advertising-consolidation/scripts/run.sh"
+  "incremental:$demo_dir/../doris-late-arriving-orders/scripts/run.sh"
+  "snapshot:$demo_dir/../doris-customer-snapshot/scripts/run.sh"
 )
 
 resolved_dbt_bin=$(command -v "$dbt_bin" 2>/dev/null || true)

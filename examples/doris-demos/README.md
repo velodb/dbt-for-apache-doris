@@ -10,6 +10,11 @@ fixture and can be run independently. The shell scripts are the repeatable
 path; five focused Jupyter Notebooks present the same work as interactive
 walkthroughs.
 
+The five dbt project directories are kept alongside this entry-point directory
+under `examples/`. They contain implementation files used by the notebooks and
+the runners. Users can open `README.md` and `notebooks/`; the implementation
+directories are not part of the JupyterLab entry view.
+
 ## What the examples show
 
 Every demo follows the same data path:
@@ -225,7 +230,9 @@ Open that URL in a browser. JupyterLab opens the Demo directory, where
 `README.md` remains visible alongside the `notebooks/` folder. Open
 `notebooks/` and start with any of the five numbered files; each includes its
 own environment check, fixture setup, dbt execution, Doris queries, and
-verifier.
+verifier. The internal `scripts/` directory is hidden from the file browser but
+remains available to the notebooks and runners. Generated `artifacts/` and the
+local Python environment are hidden as well.
 
 ### 4. Execute the demos
 
@@ -253,14 +260,14 @@ and `summary.tsv` under `examples/doris-demos/artifacts/<run-id>/`.
 To run one demo, invoke its script directly. For example:
 
 ```bash
-examples/doris-demos/geographic/scripts/run.sh
+examples/doris-customer-geographic-analysis/scripts/run.sh
 ```
 
 The single-demo runners automatically use
 `examples/doris-demos/.venv/bin/dbt`. Set `DBT_BIN` only to use a different
 dbt installation; activating the virtual environment is not required.
 
-Each demo directory contains:
+Each project directory contains:
 
 - `scripts/setup.sql`: creates the small Doris fixture;
 - `scripts/run.sh`: executes dbt and the verifier;

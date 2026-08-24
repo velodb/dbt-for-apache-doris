@@ -148,11 +148,11 @@ On Windows PowerShell, set the password with
 ## End-to-end examples
 
 The [`examples`](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples)
-tree contains five runnable Doris projects: the daily order summary project at
-`examples/doris-daily-order-summary` and four projects under
-`examples/doris-demos`. Five focused Jupyter Notebooks cover Table, View, Seed,
-Data Test, cross-database Source, incremental `merge`, Snapshot, and Async MV
-workflows.
+tree contains five runnable Doris projects and a single user-facing entry point
+at `examples/doris-demos`. Open its README and `notebooks/` directory; the
+project directories and runner scripts are implementation details. Five
+focused Jupyter Notebooks cover Table, View, Seed, Data Test, cross-database
+Source, incremental `merge`, Snapshot, and Async MV workflows.
 
 Follow the [examples quick start](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples/doris-demos#run-the-jupyter-notebooks)
 to configure Doris, create the pinned dbt environment, start JupyterLab, and run
