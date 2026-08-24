@@ -1545,7 +1545,7 @@ def test_partition_list_requires_exactly_one_non_empty_string(partition_by):
     "partition_by",
     [
         "`order-date`",
-        "分区列",
+        "partition_column",
         "date_trunc(order_date, 'day')",
         "analytics.date_trunc(order_date, 'day')",
         "analytics . date_trunc(order_date, 'day')",
