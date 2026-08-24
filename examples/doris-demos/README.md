@@ -221,9 +221,11 @@ example:
 http://127.0.0.1:18888/lab?token=...
 ```
 
-Open that URL in a browser. JupyterLab opens the `notebooks/` directory with
-five numbered Notebook files. Start with any Demo; each file includes its own
-environment check, fixture setup, dbt execution, Doris queries, and verifier.
+Open that URL in a browser. JupyterLab opens the Demo directory, where
+`README.md` remains visible alongside the `notebooks/` folder. Open
+`notebooks/` and start with any of the five numbered files; each includes its
+own environment check, fixture setup, dbt execution, Doris queries, and
+verifier.
 
 ### 4. Execute the demos
 

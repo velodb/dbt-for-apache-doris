@@ -124,9 +124,10 @@ ready:
 examples/doris-demos/scripts/start-notebook.sh
 ```
 
-The launcher automatically uses the project venv and opens the five numbered
-notebooks. Keep the server process alive, return its URL/token to the user,
-and do not claim that a notebook was executed unless its cells actually ran.
+The launcher automatically uses the project venv and exposes `README.md` plus
+the `notebooks/` folder from the Demo directory. Keep the server process alive,
+return its URL/token to the user, and do not claim that a notebook was executed
+unless its cells actually ran.
 
 ## Failure Handling
 

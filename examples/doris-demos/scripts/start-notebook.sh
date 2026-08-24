@@ -2,7 +2,6 @@
 set -euo pipefail
 
 demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-notebook_dir="$demo_dir/notebooks"
 jupyter_port=${JUPYTER_PORT:-18888}
 dbt_bin=${DBT_BIN:-$demo_dir/.venv/bin/dbt}
 
@@ -20,14 +19,14 @@ fi
 export DBT_BIN="$dbt_bin"
 
 echo "Starting the Jupyter server on 127.0.0.1:$jupyter_port"
-echo "Keep this process running and select a demo from the notebooks directory."
+echo "Keep this process running. Read README.md, then select a demo from notebooks/."
 
 jupyter_args=(
   --no-browser
   --ip=127.0.0.1
   --port="$jupyter_port"
   --ServerApp.port_retries=0
-  --ServerApp.root_dir="$notebook_dir"
+  --ServerApp.root_dir="$demo_dir"
   --ServerApp.default_url=/lab/tree
 )
 
