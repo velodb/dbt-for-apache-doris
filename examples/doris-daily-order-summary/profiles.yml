@@ -1,0 +1,11 @@
+doris_daily_order_summary:
+  target: dev
+  outputs:
+    dev:
+      type: doris
+      host: "{{ env_var('DORIS_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('DORIS_PORT', '9030') | int }}"
+      username: "{{ env_var('DORIS_USER', 'root') }}"
+      password: "{{ env_var('DORIS_PASSWORD', '') }}"
+      schema: "{{ env_var('DORIS_DEMO_TARGET_DATABASE', 'dbt_demo_daily') }}"
+      threads: 2

@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: orders
+    database: dbt_demo_incremental_source
+    schema: dbt_demo_incremental_source
+    tables:
+      - name: ORDERS

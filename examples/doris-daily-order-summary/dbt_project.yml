@@ -1,0 +1,12 @@
+name: doris_daily_order_summary
+version: 1.0.0
+config-version: 2
+profile: doris_daily_order_summary
+
+model-paths: ["models"]
+
+models:
+  doris_daily_order_summary:
+    +materialized: table
+    +properties:
+      replication_num: "1"

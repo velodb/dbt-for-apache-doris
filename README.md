@@ -11,6 +11,7 @@ Apache Doris through the Doris MySQL protocol. It is maintained by the VeloDB
 community.
 
 **[Installation](#installation)** · **[Quickstart](#quickstart)** ·
+**[Examples](#end-to-end-examples)** ·
 **[Compatibility](#compatibility)** ·
 **[PyPI](https://pypi.org/project/dbt-for-apache-doris/)** ·
 **[dbt docs](https://docs.getdbt.com/)** ·
@@ -61,7 +62,7 @@ platform boundaries are described alongside each capability.
 | dbt Core | `>=1.12,<1.13` | Declared lower bound is 1.12.0; Python dbt Core v1 only. Fusion/v2 compatibility is not claimed |
 | MySQL connector | `>=8.0.33` | Installed automatically with the adapter |
 | Apache Doris | No package-wide minimum is declared | Validate the adapter against the Doris release and topology used in production |
-| Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate is not a whole-adapter compatibility guarantee. Identifiable source builds are accepted for development testing only |
+| Async MV | Doris 2.x >=2.1.5; Doris 3.x except 3.0.0; Doris 4.x+ | This runtime gate applies to Async MV. Identifiable source builds are accepted for development testing only |
 | VeloDB | No release range is declared | Validate the adapter against the VeloDB release and topology used in production |
 
 Before production use, validate the adapter against your exact database release
@@ -143,6 +144,19 @@ dbt build
 
 On Windows PowerShell, set the password with
 `$env:DORIS_PASSWORD = '<your-password>'`, then run the same dbt commands.
+
+## End-to-end examples
+
+The [`examples`](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples)
+tree contains five runnable Doris projects and a single user-facing entry point
+at `examples/doris-demos`. Open its README and `notebooks/` directory; the
+project directories and runner scripts are implementation details. Five
+focused Jupyter Notebooks cover Table, View, Seed, Data Test, cross-database
+Source, incremental `merge`, Snapshot, and Async MV workflows.
+
+Follow the [examples quick start](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples/doris-demos#run-the-jupyter-notebooks)
+to configure Doris, create the pinned dbt environment, start JupyterLab, and run
+any of the five demos.
 
 ## Doris-specific highlights
 

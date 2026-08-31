@@ -1,0 +1,9 @@
+version: 2
+
+models:
+  - name: incremental_daily_sales
+    columns:
+      - name: order_id
+        data_tests:
+          - not_null
+          - unique

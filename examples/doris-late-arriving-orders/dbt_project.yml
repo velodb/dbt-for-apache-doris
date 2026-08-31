@@ -1,0 +1,10 @@
+name: incremental_demo
+version: 1.0.0
+config-version: 2
+profile: incremental_demo
+model-paths: [models]
+
+models:
+  incremental_demo:
+    +properties:
+      replication_num: "1"

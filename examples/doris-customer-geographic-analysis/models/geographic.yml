@@ -1,0 +1,11 @@
+version: 2
+
+models:
+  - name: fct_state_customers
+    columns:
+      - name: state_province
+        data_tests:
+          - not_null
+      - name: customer_count
+        data_tests:
+          - not_null

@@ -1,0 +1,6 @@
+version: 2
+
+models:
+  - name: stg__ads_googleads
+  - name: stg__ads_metaads
+  - name: stg__ads_tiktokads

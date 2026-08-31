@@ -1,0 +1,16 @@
+version: 2
+
+models:
+  - name: daily_order_summary
+    description: Daily order counts and revenue after excluding cancelled, returned, and failed orders.
+    columns:
+      - name: order_date
+        data_tests:
+          - not_null
+          - unique
+      - name: order_count
+        data_tests:
+          - not_null
+      - name: total_revenue
+        data_tests:
+          - not_null

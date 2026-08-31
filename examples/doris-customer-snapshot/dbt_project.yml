@@ -1,0 +1,12 @@
+name: snapshot_demo
+version: '1.0'
+config-version: 2
+profile: snapshot_demo
+model-paths: [models]
+snapshot-paths: [snapshots]
+
+models:
+  snapshot_demo:
+    +on_schema_change: append_new_columns
+    +properties:
+      replication_num: '1'
