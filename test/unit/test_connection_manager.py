@@ -22,14 +22,15 @@
 
 import inspect
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import mysql.connector
 import pytest
 from dbt.adapters.sql import SQLConnectionManager
-from dbt.exceptions import DbtRuntimeError
+from dbt.adapters.contracts.connection import Connection
+from dbt.exceptions import DbtRuntimeError, DbtValidationError
 
-from dbt.adapters.doris.connections import DorisConnectionManager
+from dbt.adapters.doris.connections import DorisConnectionManager, DorisCredentials
 
 
 def test_add_query_matches_dbt_core_parameters():
@@ -141,3 +142,50 @@ def test_add_query_preserves_select_result(monkeypatch):
     manager.add_query("select 1")
 
     cursor.nextset.assert_not_called()
+
+
+def test_session_variables_are_included_in_connection_keys():
+    credentials = DorisCredentials(schema="dbt", session_variables={"time_zone": "UTC"})
+
+    assert "session_variables" in credentials._connection_keys()
+
+
+def test_session_variables_validate_names_and_values():
+    with pytest.raises(DbtValidationError, match="Invalid Doris session variable name"):
+        DorisCredentials(schema="dbt", session_variables={"time-zone": "UTC"})
+
+    with pytest.raises(DbtValidationError, match="expected a string, integer, or boolean"):
+        DorisCredentials(schema="dbt", session_variables={"time_zone": ["UTC"]})
+
+
+def test_set_session_variables_renders_supported_values():
+    connection = MagicMock(spec=Connection)
+    cursor = MagicMock()
+    connection.handle.cursor.return_value = cursor
+
+    DorisConnectionManager._set_session_variables(
+        connection,
+        {
+            "time_zone": "Asia/Shanghai",
+            "exec_mem_limit": 8589934592,
+            "enable_profile": True,
+        },
+    )
+
+    assert [call.args[0] for call in cursor.execute.call_args_list] == [
+        "SET time_zone = 'Asia/Shanghai'",
+        "SET exec_mem_limit = 8589934592",
+        "SET enable_profile = TRUE",
+    ]
+    cursor.close.assert_called_once()
+
+
+def test_set_session_variables_escapes_string_values():
+    connection = MagicMock(spec=Connection)
+    cursor = MagicMock()
+    connection.handle.cursor.return_value = cursor
+
+    DorisConnectionManager._set_session_variables(connection, {"time_zone": "A'B"})
+
+    cursor.execute.assert_called_once_with("SET time_zone = 'A''B'")
+    cursor.close.assert_called_once()

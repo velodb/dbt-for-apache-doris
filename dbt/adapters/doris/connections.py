@@ -20,7 +20,8 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import ContextManager, Optional, Union
+import re
+from typing import ContextManager, Dict, Optional, Union
 
 import mysql.connector
 from mysql.connector.constants import FieldType
@@ -32,6 +33,7 @@ from dbt.adapters.contracts.connection import AdapterResponse, Connection
 from dbt.adapters.events.logging import AdapterLogger
 
 logger = AdapterLogger("doris")
+_SESSION_VARIABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -42,13 +44,41 @@ class DorisCredentials(Credentials):
     password: str = ""
     database: Optional[str] = None
     schema: Optional[str] = None
+    session_variables: Optional[Dict[str, Union[str, int, bool]]] = None
+
+    def __post_init__(self):
+        if self.database is not None and self.database != self.schema:
+            raise exceptions.DbtRuntimeError(
+                f"    schema: {self.schema} \n"
+                f"    database: {self.database} \n"
+                f"On Doris, database must be omitted or have the same value as"
+                f" schema."
+            )
+        if self.session_variables is None:
+            return
+        if not isinstance(self.session_variables, dict):
+            raise exceptions.DbtValidationError(
+                "Doris session_variables must be a mapping of variable names to values."
+            )
+        for name, value in self.session_variables.items():
+            if not isinstance(name, str) or not _SESSION_VARIABLE_NAME.fullmatch(name):
+                raise exceptions.DbtValidationError(
+                    f"Invalid Doris session variable name: {name!r}. "
+                    "Names may contain letters, digits, and underscores and must start "
+                    "with a letter or underscore."
+                )
+            if not isinstance(value, (str, int, bool)):
+                raise exceptions.DbtValidationError(
+                    f"Invalid value for Doris session variable {name!r}: "
+                    f"expected a string, integer, or boolean, got {type(value).__name__}."
+                )
 
     @property
     def type(self):
         return "doris"
 
     def _connection_keys(self):
-        return "host", "port", "username", "database", "schema"
+        return "host", "port", "username", "database", "schema", "session_variables"
 
     @property
     def unique_field(self) -> str:
@@ -107,7 +137,33 @@ class DorisConnectionManager(SQLConnectionManager):
                 connection.state = 'fail'
 
                 raise exceptions.DbtRuntimeError(str(e))
+        if credentials.session_variables:
+            cls._set_session_variables(connection, credentials.session_variables)
         return connection
+
+    @classmethod
+    def _set_session_variables(
+        cls,
+        connection: Connection,
+        session_variables: Dict[str, Union[str, int, bool]],
+    ) -> None:
+        """Apply configured Doris variables to a newly opened connection."""
+        cursor = connection.handle.cursor()
+        try:
+            for name, value in session_variables.items():
+                if isinstance(value, str):
+                    sql = "SET {} = '{}'".format(name, value.replace("'", "''"))
+                elif isinstance(value, bool):
+                    sql = "SET {} = {}".format(name, str(value).upper())
+                else:
+                    sql = "SET {} = {}".format(name, value)
+                cursor.execute(sql)
+        except mysql.connector.Error as error:
+            raise exceptions.DbtRuntimeError(
+                f"Failed to set Doris session variables: {error}"
+            ) from error
+        finally:
+            cursor.close()
 
     @classmethod
     def get_credentials(cls, credentials):
