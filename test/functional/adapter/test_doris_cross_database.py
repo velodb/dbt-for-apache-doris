@@ -43,17 +43,17 @@ class TestDorisRelationNamespace:
         assert rel.identifier == "my_table"
         assert rel.render() == "`my_db`.`my_db`.`my_table`"
 
-    def test_database_differs_from_schema(self):
-        """A database value is preserved as the Doris catalog component."""
+    def test_catalog_differs_from_database(self):
+        """A catalog value is preserved separately from the Doris database."""
         rel = DorisRelation.create(
-            database="other_db",
-            schema="default_schema",
+            database="other_catalog",
+            schema="default_database",
             identifier="my_table",
         )
-        assert rel.database == "other_db"
-        assert rel.schema == "default_schema"
+        assert rel.database == "other_catalog"
+        assert rel.schema == "default_database"
         assert rel.identifier == "my_table"
-        assert rel.render() == "`other_db`.`default_schema`.`my_table`"
+        assert rel.render() == "`other_catalog`.`default_database`.`my_table`"
 
     def test_database_none(self):
         """database=None should leave schema unchanged."""
