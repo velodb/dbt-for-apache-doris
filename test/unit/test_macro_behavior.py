@@ -884,6 +884,178 @@ class TestViewContractValidation:
         assert validated == []
 
 
+@pytest.mark.parametrize(
+    "database,engine,is_olap",
+    [
+        ("iceberg_catalog", None, False),
+        ("iceberg_catalog", "iceberg", False),
+        ("iceberg_catalog", "ICEBERG", False),
+        (None, None, True),
+        ("internal", None, True),
+        ("internal", "OLAP", True),
+    ],
+)
+class TestIncrementalSchemaChange:
+    """Iceberg ALTER is synchronous; OLAP retains schema-job ordering."""
+
+    def runner(self, database, engine, ddl_error=None):
+        events = []
+
+        class SchemaAdapter(FakeAdapter):
+            @staticmethod
+            def get_latest_schema_change_job_id(relation):
+                events.append(("latest_job", relation))
+                return "42"
+
+            @staticmethod
+            def wait_for_schema_change(relation, previous_job_id):
+                events.append(("wait", relation, previous_job_id))
+
+        config = {} if engine is None else {"engine": engine}
+        runner = MacroRunner(
+            *TABLE_MACROS,
+            "adapters/columns.sql",
+            context={"adapter": SchemaAdapter(), "config": FakeConfig(config)},
+        )
+        original_statement = runner.context["statement"]
+
+        def statement(name=None, fetch_result=False, auto_begin=True, caller=None):
+            sql = caller() if caller is not None else ""
+            events.append(("ddl", " ".join(sql.split())))
+            if ddl_error is not None:
+                raise ddl_error
+            return original_statement(
+                name,
+                fetch_result=fetch_result,
+                auto_begin=auto_begin,
+                caller=lambda: sql,
+            )
+
+        def add_remove_columns(relation, add_columns, remove_columns):
+            events.append(("add_remove", relation, add_columns, remove_columns))
+            if ddl_error is not None:
+                raise ddl_error
+
+        runner.context.update(
+            {
+                "statement": statement,
+                "alter_relation_add_remove_columns": add_remove_columns,
+                "alter_column_type": lambda *args: runner.context[
+                    "doris__alter_column_type"
+                ](*args),
+            }
+        )
+        return runner, events, FakeRelation(database=database)
+
+    @staticmethod
+    def changes(add_columns=None, remove_columns=None, new_types=None):
+        return {
+            "source_not_in_target": add_columns or [],
+            "target_not_in_source": remove_columns or [],
+            "new_target_types": new_types or [],
+        }
+
+    @staticmethod
+    def expected_events(relation, ddl_event, is_olap):
+        if is_olap:
+            return [
+                ("latest_job", relation),
+                ddl_event,
+                ("wait", relation, "42"),
+            ]
+        return [ddl_event]
+
+    def test_append_new_columns_uses_engine_specific_completion(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+        added = [FakeColumn("extra")]
+        removed = [FakeColumn("old_value")]
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "append_new_columns",
+            relation,
+            self.changes(added, removed),
+        )
+
+        assert events == self.expected_events(
+            relation, ("add_remove", relation, added, None), is_olap
+        )
+
+    @pytest.mark.parametrize(
+        "added_names,removed_names",
+        [(["extra"], []), ([], ["old_value"]), (["extra"], ["old_value"])],
+    )
+    def test_sync_all_columns_adds_and_removes_before_waiting(
+        self, database, engine, is_olap, added_names, removed_names
+    ):
+        runner, events, relation = self.runner(database, engine)
+        added = [FakeColumn(name) for name in added_names]
+        removed = [FakeColumn(name) for name in removed_names]
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "sync_all_columns",
+            relation,
+            self.changes(added, removed),
+        )
+
+        assert events == self.expected_events(
+            relation, ("add_remove", relation, added, removed), is_olap
+        )
+
+    def test_sync_all_columns_changes_types_through_real_alter_macro(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "sync_all_columns",
+            relation,
+            self.changes(new_types=[{"column_name": "id", "new_type": "BIGINT"}]),
+        )
+
+        sql = f"alter table {relation} modify column `id` BIGINT"
+        assert [" ".join(statement.sql.split()) for statement in runner.statements] == [sql]
+        assert events == self.expected_events(relation, ("ddl", sql), is_olap)
+
+    def test_direct_type_change_uses_engine_specific_completion(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render("doris__alter_column_type", relation, "value", "varchar(64)")
+
+        sql = f"alter table {relation} modify column `value` varchar(64)"
+        assert events == self.expected_events(relation, ("ddl", sql), is_olap)
+
+    @pytest.mark.parametrize("mode", ["append_new_columns", "sync_all_columns"])
+    def test_unchanged_schema_has_no_ddl_or_job_queries(
+        self, database, engine, is_olap, mode
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render("doris__sync_column_schemas", mode, relation, self.changes())
+
+        assert events == []
+        assert runner.statements == []
+
+    def test_alter_failure_is_propagated_without_waiting(
+        self, database, engine, is_olap
+    ):
+        error = RuntimeError("Unsupported type conversion")
+        runner, events, relation = self.runner(database, engine, ddl_error=error)
+
+        with pytest.raises(RuntimeError, match="Unsupported type conversion"):
+            runner.render("doris__alter_column_type", relation, "id", "STRING")
+
+        expected = [("latest_job", relation)] if is_olap else []
+        expected.append(("ddl", f"alter table {relation} modify column `id` STRING"))
+        assert events == expected
+
+
 class TestPersistDocs:
     """Column comments come from dbt as {column_name: column_info_dict}.
 

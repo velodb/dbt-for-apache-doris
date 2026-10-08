@@ -75,6 +75,16 @@
       or config.get('incremental_predicates', none)
   ) %}
   {% set overwrite_partitions = config.get('overwrite_partitions', none) %}
+  {% if (
+      effective_strategy == 'insert_overwrite'
+      and not doris__is_olap_table(target_relation)
+      and overwrite_partitions is not none
+  ) %}
+      {% do exceptions.raise_compiler_error(
+          "External insert_overwrite does not support overwrite_partitions: "
+          ~ "Doris named partitions are not Iceberg partition predicates."
+      ) %}
+  {% endif %}
   {% set grant_config = config.get('grants') %}
   {% set microbatch_partition = none %}
 
@@ -200,11 +210,12 @@
       {% set temp_relation_exists = false %}
       {% set dest_columns = none %}
 
-      {# Schema-changing runs and custom strategies need a frozen batch.
-         Ordinary built-ins use a logical metadata view, not a physical staging
-         table, and finish with one DML statement. #}
+      {# External Catalogs cannot create the logical schema view used by OLAP
+         built-ins. Freeze their batch in a physical table; schema-changing
+         runs and custom strategies also require that frozen source. #}
       {% set needs_physical_staging = (
-          effective_strategy not in [
+          not doris__is_olap_table(target_relation)
+          or effective_strategy not in [
               'append', 'merge', 'insert_overwrite', 'microbatch'
           ]
           or on_schema_change != 'ignore'

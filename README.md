@@ -213,6 +213,28 @@ are rejected by Doris. Source, target and backup names must be distinct and
 within the same Catalog and Database. The Catalog must support table rename;
 this behavior was verified with an Iceberg REST Catalog on Doris 4.1.3.
 
+Ordinary Iceberg incremental runs can use
+`incremental_strategy='insert_overwrite'` with no `unique_key`. The adapter
+freezes the model result in a physical Iceberg staging table, then executes
+one native INSERT OVERWRITE against the target and cleans up the stage. It
+does not create the logical metadata View used by ordinary OLAP incrementals.
+This adds a staging write. The target is not renamed during ordinary overwrite.
+
+On an unpartitioned Iceberg target, the SELECT must provide the complete
+replacement result; an empty result clears the table. This scope was verified
+on Doris 4.1.3. Partitioned Iceberg overwrite scope is not covered by these
+tests, and Doris named-partition `overwrite_partitions` is rejected for external
+targets. A non-empty `unique_key` is still rejected for insert_overwrite to avoid
+silently interpreting an old upsert configuration as whole-table replacement.
+
+The four `on_schema_change` policies are exercised on Iceberg: `ignore`, `fail`,
+`append_new_columns`, and `sync_all_columns`. External column DDL executes
+through the connector without polling an OLAP Schema Change job; OLAP keeps
+its asynchronous job wait. Supported type changes depend on the connector and
+its actual ALTER result. Schema DDL and overwrite are separate statements and
+do not provide rollback for an entire dbt run. Incremental comment updates were
+not verified by these tests.
+
 The opt-in functional regression uses the configured Doris test endpoint and
 an existing writable Catalog:
 
@@ -243,7 +265,7 @@ any of the five demos.
 | --- | --- | --- |
 | `append` | Duplicate Key table | Appends rows with `INSERT INTO` |
 | `merge` | MOW or MOR Unique Key table | Full-row `INSERT INTO` upsert using Doris Unique Key semantics; requires `unique_key` and does not emit SQL `MERGE INTO` |
-| `insert_overwrite` | Writable Doris table | Whole-table, named-partition, or dynamic-partition `INSERT OVERWRITE`; `unique_key` is rejected |
+| `insert_overwrite` | Writable OLAP table; verified unpartitioned Iceberg target | Native `INSERT OVERWRITE`; OLAP also supports named or dynamic partitions; `unique_key` is rejected |
 | `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; hour/day/month/year windows; static or dynamic partitions; batches run serially |
 
 Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses

@@ -168,12 +168,17 @@
 {% endmacro %}
 
 {% macro doris__alter_column_type(relation, column_name, new_column_type) -%}
-    {% set previous_job_id = adapter.get_latest_schema_change_job_id(relation) %}
+    {% set is_olap = doris__is_olap_table(relation) %}
+    {% if is_olap %}
+        {% set previous_job_id = adapter.get_latest_schema_change_job_id(relation) %}
+    {% endif %}
     {% call statement('alter_column_type') %}
         alter table {{ relation }} modify column
             {{ adapter.quote(column_name) }} {{ new_column_type }}
     {% endcall %}
-    {% do adapter.wait_for_schema_change(relation, previous_job_id) %}
+    {% if is_olap %}
+        {% do adapter.wait_for_schema_change(relation, previous_job_id) %}
+    {% endif %}
 {% endmacro %}
 
 
@@ -185,37 +190,48 @@
     {% set add_to_target = schema_changes_dict['source_not_in_target'] %}
     {% set remove_from_target = schema_changes_dict['target_not_in_source'] %}
     {% set new_target_types = schema_changes_dict['new_target_types'] %}
+    {# OLAP ALTER COLUMN is asynchronous. External Catalog ALTER is completed
+       by its connector and has no Doris OLAP schema-change job to poll. #}
+    {% set is_olap = doris__is_olap_table(target_relation) %}
 
     {% if on_schema_change == 'append_new_columns' %}
         {% if add_to_target | length > 0 %}
-            {% set previous_job_id = adapter.get_latest_schema_change_job_id(
-                target_relation
-            ) %}
+            {% if is_olap %}
+                {% set previous_job_id = adapter.get_latest_schema_change_job_id(
+                    target_relation
+                ) %}
+            {% endif %}
             {% do alter_relation_add_remove_columns(
                 target_relation,
                 add_to_target,
                 none
             ) %}
-            {% do adapter.wait_for_schema_change(
-                target_relation,
-                previous_job_id
-            ) %}
+            {% if is_olap %}
+                {% do adapter.wait_for_schema_change(
+                    target_relation,
+                    previous_job_id
+                ) %}
+            {% endif %}
         {% endif %}
 
     {% elif on_schema_change == 'sync_all_columns' %}
         {% if add_to_target | length > 0 or remove_from_target | length > 0 %}
-            {% set previous_job_id = adapter.get_latest_schema_change_job_id(
-                target_relation
-            ) %}
+            {% if is_olap %}
+                {% set previous_job_id = adapter.get_latest_schema_change_job_id(
+                    target_relation
+                ) %}
+            {% endif %}
             {% do alter_relation_add_remove_columns(
                 target_relation,
                 add_to_target,
                 remove_from_target
             ) %}
-            {% do adapter.wait_for_schema_change(
-                target_relation,
-                previous_job_id
-            ) %}
+            {% if is_olap %}
+                {% do adapter.wait_for_schema_change(
+                    target_relation,
+                    previous_job_id
+                ) %}
+            {% endif %}
         {% endif %}
 
         {% for type_change in new_target_types %}
