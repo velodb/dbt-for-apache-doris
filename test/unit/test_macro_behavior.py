@@ -381,6 +381,211 @@ class TestCreateTableEngine:
         assert "COMMENT 'Identifier'" in creates[1]
 
 
+class TestExchangeRelation:
+    """External replacement preserves the old table; OLAP keeps its atomic swap."""
+
+    @staticmethod
+    def runner(engine=None):
+        config = {} if engine is None else {"engine": engine}
+        return MacroRunner(
+            "adapters/relation.sql",
+            context={
+                "config": FakeConfig(config),
+                "make_backup_relation": lambda relation, relation_type: relation.incorporate(
+                    path={"identifier": relation.identifier + "__dbt_backup"},
+                    type=relation_type,
+                ),
+            },
+        )
+
+    @staticmethod
+    def statements(runner):
+        return [
+            (statement.name, " ".join(statement.sql.split()))
+            for statement in runner.statements
+        ]
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_external_replacement_preserves_target_until_publish(
+        self, engine, drop_target
+    ):
+        runner = self.runner(engine)
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, drop_target)
+
+        expected = [
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders` rename `orders__dbt_backup`",
+            ),
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_tmp` rename `orders`",
+            ),
+        ]
+        if drop_target:
+            expected.append(
+                (
+                    "drop_relation",
+                    "drop table if exists `iceberg_catalog`.`dbt_test`.`orders__dbt_backup`",
+                )
+            )
+        else:
+            expected.append(
+                (
+                    "rename_relation",
+                    "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_backup` "
+                    "rename `orders__dbt_tmp`",
+                )
+            )
+        assert self.statements(runner) == expected
+
+    @pytest.mark.parametrize("drop_destination", [None, False, True])
+    def test_rename_destination_drop_is_optional(self, drop_destination):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+        options = (
+            {} if drop_destination is None else {"drop_destination": drop_destination}
+        )
+
+        runner.render("doris__rename_relation", source, target, **options)
+
+        expected = []
+        if drop_destination is not False:
+            expected.append(
+                (
+                    "drop_relation",
+                    "drop table if exists `iceberg_catalog`.`dbt_test`.`orders`",
+                )
+            )
+        expected.append(
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_tmp` rename `orders`",
+            )
+        )
+        assert self.statements(runner) == expected
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_olap_keeps_atomic_replace(self, database, engine, drop_target):
+        runner = self.runner(engine)
+        target = FakeRelation(database=database, identifier="orders")
+        source = FakeRelation(database=database, identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, drop_target)
+
+        assert self.statements(runner) == [
+            (
+                "exchange_relation",
+                f"ALTER TABLE {target} REPLACE WITH TABLE `orders__dbt_tmp` "
+                f"PROPERTIES('swap' = '{not drop_target}');",
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            FakeRelation(database="other_catalog", identifier="orders__dbt_tmp"),
+            FakeRelation(
+                database="iceberg_catalog",
+                schema="other_schema",
+                identifier="orders__dbt_tmp",
+            ),
+        ],
+    )
+    def test_external_cross_namespace_is_rejected_before_writes(self, source):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+
+        with pytest.raises(CapturedCompilerError, match="(?i)catalog|schema"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    def test_external_self_replacement_is_rejected_before_writes(self):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders")
+
+        with pytest.raises(CapturedCompilerError, match="(?i)distinct|different"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    def test_external_backup_name_collision_is_rejected_before_writes(self):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(
+            database="iceberg_catalog", identifier="orders__dbt_backup"
+        )
+
+        with pytest.raises(CapturedCompilerError, match="(?i)backup"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_failed_publish_does_not_drop_backup(self, drop_target):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+        capture = runner.context["statement"]
+
+        def fail_publish(name=None, caller=None, **kwargs):
+            rendered_sql = caller()
+            capture(name, caller=lambda: rendered_sql, **kwargs)
+            if "orders__dbt_tmp` rename" in rendered_sql:
+                raise RuntimeError("publish failed")
+            return ""
+
+        runner.context["statement"] = fail_publish
+        with pytest.raises(RuntimeError, match="publish failed"):
+            runner.render("exchange_relation", target, source, drop_target)
+
+        assert [statement.name for statement in runner.statements] == [
+            "rename_relation",
+            "rename_relation",
+        ]
+        assert "`orders` rename `orders__dbt_backup`" in runner.statements[0].sql
+
+    @pytest.mark.parametrize("target_name", ["select", "order details", "order`daily"])
+    def test_external_rename_quotes_target_identifier(self, target_name):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier=target_name)
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, True)
+
+        expected_identifier = "`" + target_name.replace("`", "``") + "`"
+        assert runner.statements[1].sql.endswith("rename " + expected_identifier)
+
+    @pytest.mark.parametrize("engine", [None, "OLAP", "iceberg"])
+    @pytest.mark.parametrize("view_position", ["target", "source"])
+    def test_views_are_rejected_before_writes(self, engine, view_position):
+        runner = self.runner(engine)
+        target = FakeRelation(
+            database="iceberg_catalog",
+            identifier="orders",
+            relation_type="view" if view_position == "target" else "table",
+        )
+        source = FakeRelation(
+            database="iceberg_catalog",
+            identifier="orders__dbt_tmp",
+            relation_type="view" if view_position == "source" else "table",
+        )
+
+        with pytest.raises(CapturedCompilerError, match="Views"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+
 class TestSeedEngine:
     @staticmethod
     def runner(database, config):

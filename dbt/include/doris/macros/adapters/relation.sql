@@ -223,7 +223,11 @@
   {% do adapter.drop_relation(from_relation) %}
 {%- endmacro %}
 
-{% macro doris__rename_relation(from_relation, to_relation) -%}
+{% macro doris__rename_relation(
+    from_relation,
+    to_relation,
+    drop_destination=true
+) -%}
   {% if from_relation.is_view or to_relation.is_view %}
     {% do exceptions.raise_compiler_error(
         "Doris cannot safely rename a View. Materializations must snapshot "
@@ -231,14 +235,16 @@
     ) %}
   {% endif %}
 
-  {% call statement('drop_relation') %}
-    drop {{ 'materialized view' if to_relation.type == 'materialized_view' else to_relation.type }} if exists {{ to_relation }}
-  {% endcall %}
+  {% if drop_destination %}
+    {% call statement('drop_relation') %}
+      drop {{ 'materialized view' if to_relation.type == 'materialized_view' else to_relation.type }} if exists {{ to_relation }}
+    {% endcall %}
+  {% endif %}
   {% call statement('rename_relation') %}
     {% if to_relation.type == 'materialized_view' %}
     alter materialized view {{ from_relation }} rename `{{ to_relation.table | replace("`", "``") }}`
     {% else %}
-    alter table {{ from_relation }} rename {{ to_relation.table }}
+    alter table {{ from_relation }} rename `{{ to_relation.table | replace("`", "``") }}`
     {% endif %}
   {% endcall %}
 
@@ -251,9 +257,59 @@
         "Doris cannot safely exchange Views."
     ) %}
   {% endif %}
-  {% call statement('exchange_relation') %}
-    ALTER TABLE {{ relation1 }} REPLACE WITH TABLE `{{ relation2.table }}` PROPERTIES('swap' = '{{not is_drop_r1}}');
-  {% endcall %}
+  {% if doris__is_olap_table(relation1) %}
+    {% call statement('exchange_relation') %}
+      ALTER TABLE {{ relation1 }} REPLACE WITH TABLE `{{ relation2.table }}` PROPERTIES('swap' = '{{not is_drop_r1}}');
+    {% endcall %}
+  {% else %}
+    {# External Catalogs cannot use Doris OLAP REPLACE TABLE. RENAME only
+       changes the identifier within its original namespace. #}
+    {% if (
+        (relation1.database or 'internal') != (relation2.database or 'internal')
+        or relation1.schema != relation2.schema
+    ) %}
+      {% do exceptions.raise_compiler_error(
+          "External table replacement requires the same Catalog and Database."
+      ) %}
+    {% endif %}
+    {% if relation1.identifier == relation2.identifier %}
+      {% do exceptions.raise_compiler_error(
+          "External table replacement requires distinct target and intermediate tables."
+      ) %}
+    {% endif %}
+    {% set backup_relation = make_backup_relation(relation1, 'table') %}
+    {% if backup_relation.identifier in [relation1.identifier, relation2.identifier] %}
+      {% do exceptions.raise_compiler_error(
+          "External table replacement backup name conflicts with a replacement table."
+      ) %}
+    {% endif %}
+
+    {# This sequence is non-atomic. Keep the original data under dbt's backup
+       name until the new table is published. Do not DROP destinations: a
+       conflicting name must fail rather than destroy a recovery table.
+       Direct macro calls leave the exchange's existing cache behavior intact. #}
+    {% do doris__rename_relation(
+        relation1,
+        backup_relation,
+        drop_destination=false
+    ) %}
+    {% do doris__rename_relation(
+        relation2,
+        relation1,
+        drop_destination=false
+    ) %}
+    {% if is_drop_r1 %}
+      {% do doris__drop_relation(backup_relation) %}
+    {% else %}
+      {# Match swap=true: the caller keeps the old data under the intermediate
+         name until its own post-processing and cleanup have succeeded. #}
+      {% do doris__rename_relation(
+          backup_relation,
+          relation2,
+          drop_destination=false
+      ) %}
+    {% endif %}
+  {% endif %}
 
 {%- endmacro %}
 

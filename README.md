@@ -194,9 +194,24 @@ validate; OLAP-only options are incompatible with Iceberg targets.
 
 First creation is covered for table models, column documentation, incremental
 models with a logical key, and seeds with Iceberg-compatible column types.
-This does not enable subsequent Iceberg merge, atomic table replacement, or
-ordinary seed reload: those flows still depend on operations that were rejected
-by the Doris 4.1.3 Iceberg connector in local verification.
+Subsequent Iceberg merge and ordinary seed reload still depend on operations
+that were rejected by the Doris 4.1.3 Iceberg connector in local verification.
+
+Table model reruns and incremental `--full-refresh` use a non-atomic replacement
+for external targets. The adapter renames the old target to dbt's backup name,
+then renames the fully built intermediate table to the target name. Table models
+delete the backup after publication; incremental full refresh moves it to the
+intermediate name so the existing post-processing and cleanup keep the old data
+until they finish. OLAP targets retain the atomic `REPLACE WITH TABLE` path.
+
+The target name is briefly absent between the two renames. If publication
+fails, the old data remains in the backup table. The existing Table retry path
+can restore it; the incremental retry path uses it as a marker for a complete
+rebuild. Failure after publication does not roll the new target back. Rename
+destinations are not deleted in this replacement path, so conflicting names
+are rejected by Doris. Source, target and backup names must be distinct and
+within the same Catalog and Database. The Catalog must support table rename;
+this behavior was verified with an Iceberg REST Catalog on Doris 4.1.3.
 
 The opt-in functional regression uses the configured Doris test endpoint and
 an existing writable Catalog:

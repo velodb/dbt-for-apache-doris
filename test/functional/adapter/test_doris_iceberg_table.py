@@ -157,3 +157,172 @@ class TestDorisIcebergFirstCreate:
         names = {row[0] for row in tables}
         assert relation.identifier not in names
         assert relation.identifier + "__dbt_tmp" not in names
+
+
+REPLACEMENT_SQL = """
+{% if var('fail_build', false) %}
+select missing_issue2_column from numbers("number" = "1")
+{% elif var('batch', 1) == 1 %}
+select cast(1 as int) as id, cast('first' as string) as value
+union all
+select cast(2 as int) as id, cast('second' as string) as value
+{% elif var('batch', 1) == 2 %}
+select cast(2 as int) as id, cast('updated' as string) as value
+union all
+select cast(3 as int) as id, cast('new' as string) as value
+{% else %}
+select cast(4 as int) as id, cast('replacement' as string) as value
+{% endif %}
+"""
+REPLACEMENT_CONFIGS = {
+    "iceberg_replace_default": "materialized='table'",
+    "iceberg_replace_explicit": "materialized='table', engine='iceberg'",
+    "iceberg_replace_quoted": "materialized='table', alias='select'",
+    "iceberg_refresh_default": (
+        "materialized='incremental', incremental_strategy='insert_overwrite'"
+    ),
+    "iceberg_refresh_explicit": (
+        "materialized='incremental', incremental_strategy='insert_overwrite', "
+        "engine='iceberg'"
+    ),
+    "iceberg_failed_replace_default": "materialized='table'",
+    "iceberg_failed_replace_explicit": "materialized='table', engine='iceberg'",
+    "iceberg_interrupted_table": "materialized='table'",
+    "iceberg_interrupted_refresh": (
+        "materialized='incremental', incremental_strategy='insert_overwrite', "
+        "engine='iceberg'"
+    ),
+}
+
+
+class TestDorisIcebergReplacement:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            f"{name}.sql": "{{ config(" + config + ") }}\n" + REPLACEMENT_SQL
+            for name, config in REPLACEMENT_CONFIGS.items()
+        }
+
+    @staticmethod
+    def assert_target(project, name, expected_rows):
+        relation = relation_from_name(project.adapter, name)
+        ddl = project.run_sql(f"show create table {relation}", fetch="one")[1]
+        assert "ICEBERG_EXTERNAL_TABLE" in ddl.upper()
+        assert (
+            project.run_sql(
+                f"select id, value from {relation} order by id", fetch="all"
+            )
+            == expected_rows
+        )
+        tables = project.run_sql(
+            f"show tables from `{relation.database}`.`{relation.schema}`", fetch="all"
+        )
+        names = {row[0] for row in tables}
+        assert relation.identifier in names
+        assert relation.identifier + "__dbt_tmp" not in names
+        assert relation.identifier + "__dbt_backup" not in names
+
+    @pytest.mark.parametrize(
+        "name", ["iceberg_replace_default", "iceberg_replace_explicit"]
+    )
+    def test_table_rerun_and_full_refresh_replace_all_data(self, project, name):
+        run_dbt(["run", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        run_dbt(["run", "--select", name, "--vars", "{batch: 2}"])
+        self.assert_target(project, name, [(2, "updated"), (3, "new")])
+
+        run_dbt(["run", "--select", name, "--full-refresh", "--vars", "{batch: 3}"])
+        self.assert_target(project, name, [(4, "replacement")])
+
+    def test_reserved_target_name_can_be_replaced(self, project):
+        run_dbt(["run", "--select", "iceberg_replace_quoted"])
+        self.assert_target(project, "select", EXPECTED_ROWS)
+
+        run_dbt(["run", "--select", "iceberg_replace_quoted", "--vars", "{batch: 2}"])
+        self.assert_target(project, "select", [(2, "updated"), (3, "new")])
+
+    @pytest.mark.parametrize(
+        "name", ["iceberg_refresh_default", "iceberg_refresh_explicit"]
+    )
+    def test_incremental_full_refresh_replaces_all_data(self, project, name):
+        run_dbt(["run", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        # Ordinary incremental runs exercise a separate strategy/temporary-view
+        # path. This regression covers the shared full-refresh replacement path.
+        run_dbt(["run", "--select", name, "--full-refresh", "--vars", "{batch: 2}"])
+        self.assert_target(project, name, [(2, "updated"), (3, "new")])
+
+        run_dbt(["run", "--select", name, "--full-refresh", "--vars", "{batch: 3}"])
+        self.assert_target(project, name, [(4, "replacement")])
+
+    @pytest.mark.parametrize(
+        "name",
+        ["iceberg_failed_replace_default", "iceberg_failed_replace_explicit"],
+    )
+    def test_failed_build_keeps_existing_target(self, project, name):
+        run_dbt(["run", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        failure = run_dbt(
+            ["run", "--select", name, "--vars", "{fail_build: true}"],
+            expect_pass=False,
+        )
+        assert len(failure.results) == 1
+        assert "missing_issue2_column" in failure.results[0].message
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        run_dbt(["run", "--select", name, "--vars", "{batch: 2}"])
+        self.assert_target(project, name, [(2, "updated"), (3, "new")])
+
+    @pytest.mark.parametrize(
+        "name,refresh_args",
+        [
+            ("iceberg_interrupted_table", []),
+            ("iceberg_interrupted_refresh", ["--full-refresh"]),
+        ],
+    )
+    def test_interrupted_publish_preserves_backup_through_failed_retry(
+        self, project, name, refresh_args
+    ):
+        run_dbt(["run", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        # Reproduce the state after target -> backup succeeds and publishing
+        # the replacement fails, without changing production adapter macros.
+        relation = relation_from_name(project.adapter, name)
+        project.run_sql(
+            f"alter table {relation} rename `{relation.identifier}__dbt_backup`"
+        )
+
+        run_args = ["run", "--select", name] + refresh_args
+        failure = run_dbt(
+            run_args + ["--vars", "{fail_build: true}"], expect_pass=False
+        )
+        assert len(failure.results) == 1
+        assert "missing_issue2_column" in failure.results[0].message
+        if refresh_args:
+            # Incremental recovery retains the backup while rebuilding a
+            # missing target. A failed rebuild must leave that data available.
+            backup = relation.incorporate(
+                path={"identifier": relation.identifier + "__dbt_backup"}
+            )
+            assert (
+                project.run_sql(
+                    f"select id, value from {backup} order by id", fetch="all"
+                )
+                == EXPECTED_ROWS
+            )
+            tables = project.run_sql(
+                f"show tables from `{relation.database}`.`{relation.schema}`",
+                fetch="all",
+            )
+            names = {row[0] for row in tables}
+            assert relation.identifier not in names
+            assert backup.identifier in names
+        else:
+            self.assert_target(project, name, EXPECTED_ROWS)
+
+        run_dbt(run_args + ["--vars", "{batch: 2}"])
+        self.assert_target(project, name, [(2, "updated"), (3, "new")])
