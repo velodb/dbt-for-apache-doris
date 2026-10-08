@@ -875,12 +875,111 @@ class TestDorisIcebergSeedInferredTypes:
     @pytest.fixture(scope="class")
     def seeds(self):
         # Non-boolean numbers and text establish distinct inferred types.
-        return {"iceberg_seed_empty_inferred.csv": "id,value\n101,alpha\n202,beta\n"}
+        names = ["iceberg_seed_empty_inferred", "iceberg_seed_explicit_type_change"]
+        names.extend(
+            f"iceberg_seed_{case}_{engine}_inferred"
+            for case in ("nulls", "digits", "refresh")
+            for engine in ("default", "explicit")
+        )
+        return {name + ".csv": "id,value\n101,alpha\n202,beta\n" for name in names}
 
     @pytest.fixture(scope="class")
     def project_config_update(self):
-        # Deliberately omit engine and column_types, including global overrides.
-        return {}
+        # Inference cases have no column_types, including global overrides.
+        configs = {
+            f"iceberg_seed_{case}_explicit_inferred": {"engine": "iceberg"}
+            for case in ("nulls", "digits", "refresh")
+        }
+        configs["iceberg_seed_explicit_type_change"] = {
+            "engine": "iceberg",
+            "+column_types": {
+                "id": "BIGINT",
+                "value": "{{ var('seed_value_type', 'STRING') }}",
+            },
+        }
+        return {"seeds": {"test": configs}}
+
+    @pytest.mark.parametrize("engine", ["default", "explicit"])
+    @pytest.mark.parametrize(
+        "case,csv,expected_rows",
+        [
+            ("nulls", "id,value\n101,\n202,\n", [(101, None), (202, None)]),
+            (
+                "digits",
+                "id,value\n101,123\n202,456\n",
+                [(101, "123"), (202, "456")],
+            ),
+        ],
+    )
+    def test_nonempty_reload_keeps_inferred_target_types(
+        self, project, engine, case, csv, expected_rows
+    ):
+        name = f"iceberg_seed_{case}_{engine}_inferred"
+        results = run_dbt(["seed", "--select", name])
+        assert results[0].node.config.column_types == {}
+        TestDorisIcebergSeed.assert_target(project, name, [(101, "alpha"), (202, "beta")])
+        relation = relation_from_name(project.adapter, name)
+        columns_before = project.run_sql(f"describe {relation}", fetch="all")
+
+        TestDorisIcebergSeed.write_csv(project, name, csv)
+        for _ in range(2):
+            _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+            TestDorisIcebergSeed.assert_one_overwrite(statements, name)
+            assert not any(" rename " in sql for sql in statements)
+            assert project.run_sql(f"describe {relation}", fetch="all") == columns_before
+            TestDorisIcebergSeed.assert_target(project, name, expected_rows)
+
+    @pytest.mark.parametrize("engine", ["default", "explicit"])
+    def test_full_refresh_reinfers_nonempty_csv_types(self, project, engine):
+        name = f"iceberg_seed_refresh_{engine}_inferred"
+        results = run_dbt(["seed", "--select", name])
+        assert results[0].node.config.column_types == {}
+        TestDorisIcebergSeed.assert_target(project, name, [(101, "alpha"), (202, "beta")])
+        relation = relation_from_name(project.adapter, name)
+        columns_before = project.run_sql(f"describe {relation}", fetch="all")
+
+        TestDorisIcebergSeed.write_csv(project, name, "id,value\n101,123\n202,456\n")
+        results = run_dbt(["seed", "--select", name, "--full-refresh"])
+        assert results[0].node.config.column_types == {}
+        columns_after = project.run_sql(f"describe {relation}", fetch="all")
+        assert columns_after[1][1].upper() == "BIGINT"
+        assert columns_after[1][1] != columns_before[1][1]
+        TestDorisIcebergSeed.assert_target(project, name, [(101, 123), (202, 456)])
+
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        TestDorisIcebergSeed.assert_one_overwrite(statements, name)
+        assert project.run_sql(f"describe {relation}", fetch="all") == columns_after
+        TestDorisIcebergSeed.assert_target(project, name, [(101, 123), (202, 456)])
+
+    def test_explicit_column_type_change_still_requires_full_refresh(self, project):
+        name = "iceberg_seed_explicit_type_change"
+        results = run_dbt(["seed", "--select", name])
+        assert results[0].node.config.column_types == {"id": "BIGINT", "value": "STRING"}
+        TestDorisIcebergSeed.assert_target(project, name, [(101, "alpha"), (202, "beta")])
+        relation = relation_from_name(project.adapter, name)
+        columns_before = project.run_sql(f"describe {relation}", fetch="all")
+        TestDorisIcebergSeed.write_csv(project, name, "id,value\n101,123\n202,456\n")
+        type_args = ["--vars", "{seed_value_type: BIGINT}"]
+
+        failure, statements = _run_and_capture_sql(
+            name, ["seed", "--select", name] + type_args, expect_pass=False
+        )
+        assert failure.results[0].node.config.column_types["value"] == "BIGINT"
+        assert "schema changed" in failure.results[0].message.lower()
+        assert "full-refresh" in failure.results[0].message.lower()
+        assert not any("insert overwrite table" in sql for sql in statements)
+        assert project.run_sql(f"describe {relation}", fetch="all") == columns_before
+        TestDorisIcebergSeed.assert_target(project, name, [(101, "alpha"), (202, "beta")])
+
+        run_dbt(["seed", "--select", name, "--full-refresh"] + type_args)
+        columns_after = project.run_sql(f"describe {relation}", fetch="all")
+        assert columns_after[1][1].upper() == "BIGINT"
+        TestDorisIcebergSeed.assert_target(project, name, [(101, 123), (202, 456)])
+
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name] + type_args)
+        TestDorisIcebergSeed.assert_one_overwrite(statements, name)
+        assert project.run_sql(f"describe {relation}", fetch="all") == columns_after
+        TestDorisIcebergSeed.assert_target(project, name, [(101, 123), (202, 456)])
 
     def test_header_only_seed_keeps_inferred_schema_and_clears_rows(self, project):
         name = "iceberg_seed_empty_inferred"

@@ -238,9 +238,11 @@ not verified by these tests.
 Iceberg seeds load every bound CSV batch into a private table before publishing
 any of it. Ordinary reload verifies the CSV schema and performs one native
 INSERT OVERWRITE, avoiding unsupported TRUNCATE and repeated batch overwrites.
-A header-only CSV clears an existing unpartitioned target; without explicit
-column types, ordinary empty reload retains its existing field types. Explicit
-column types take precedence. A schema change requires `dbt seed --full-refresh`.
+A header-only CSV clears an existing unpartitioned target. Ordinary reload
+defaults to the target's existing field types, including when new samples are
+all NULL or numeric text. Explicit column types take precedence. A schema
+change requires `dbt seed --full-refresh`; first creation and full refresh infer
+types from the CSV unless explicit column types are configured.
 
 First creation publishes the completely loaded stage. Full refresh uses the
 backup replacement described above, after all CSV batches have loaded. A

@@ -54,14 +54,14 @@
     {% do doris__preflight_grants(target_relation, grant_config) %}
 
     {% do drop_relation_if_exists(load_cached_relation(stage_relation)) %}
-    {# Empty CSV columns have no samples and agate infers Boolean. An ordinary
-       reload must retain the target's types while still checking its headers;
-       explicit column_types continue to override these inference defaults. #}
+    {# CSV samples can change their inferred types without a schema change,
+       for example when a string column becomes all NULL or numeric text.
+       Ordinary reload must retain target types while checking headers;
+       explicit column_types continue to override these defaults. #}
     {% set inferred_column_types = {} %}
     {% if (
         old_relation is not none
         and not full_refresh_mode
-        and agate_table.rows | length == 0
     ) %}
         {% for column in adapter.get_columns_in_relation(target_relation) %}
             {% do inferred_column_types.update({column.name | lower: column.data_type}) %}
