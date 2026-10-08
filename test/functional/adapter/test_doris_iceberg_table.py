@@ -604,3 +604,337 @@ class TestDorisIcebergIncrementalOverwrite:
         )
         self.assert_physical_overwrite(statements, name)
         self.assert_target(project, name, [(2, "updated"), (3, "new")])
+
+
+class TestDorisIcebergSeed:
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {
+            "iceberg_seed_reload_default.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_reload_explicit.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_empty_default.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_empty_explicit.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_schema.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_failed_load.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_failed_refresh.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_quoted.csv": 'select,value note\n1,"O\'Reilly, value"\n2,\n',
+            "iceberg_seed_batches.csv": "id,value\n1,one\n2,two\n3,three\n4,four\n5,five\n",
+            "iceberg_seed_recovery_missing.csv": "id,value\n1,first\n2,second\n",
+            "iceberg_seed_recovery_conflict.csv": "id,value\n1,first\n2,second\n",
+        }
+
+    @pytest.fixture(scope="class")
+    def macros(self):
+        # Exercise the production batching path with three small INSERTs.
+        return {
+            "seed_batch_size.sql": (
+                "{% macro get_batch_size() %}{{ return(2) }}{% endmacro %}"
+            )
+        }
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "seeds": {
+                "+column_types": {"id": "INT", "value": "STRING"},
+                "test": {
+                    "iceberg_seed_reload_explicit": {"engine": "iceberg"},
+                    "iceberg_seed_empty_explicit": {"engine": "iceberg"},
+                    "iceberg_seed_schema": {"column_types": {"extra": "INT"}},
+                    "iceberg_seed_failed_load": {
+                        "pre-hook": "set enable_strict_cast=true"
+                    },
+                    "iceberg_seed_failed_refresh": {
+                        "pre-hook": "set enable_strict_cast=true"
+                    },
+                    "iceberg_seed_recovery_missing": {
+                        "pre-hook": "set enable_strict_cast=true"
+                    },
+                    "iceberg_seed_quoted": {
+                        "quote_columns": True,
+                        "column_types": {"select": "INT", "value note": "STRING"},
+                    },
+                },
+            }
+        }
+
+    @staticmethod
+    def assert_target(
+        project, name, expected_rows, columns=("id", "value"), allow_stage=False
+    ):
+        relation = relation_from_name(project.adapter, name)
+        ddl = project.run_sql(f"show create table {relation}", fetch="one")[1]
+        assert "ICEBERG_EXTERNAL_TABLE" in ddl.upper()
+        actual_columns = project.run_sql(f"describe {relation}", fetch="all")
+        assert [column[0] for column in actual_columns] == list(columns)
+        columns_sql = ", ".join(project.adapter.quote(column) for column in columns)
+        assert project.run_sql(
+            f"select {columns_sql} from {relation} order by 1", fetch="all"
+        ) == expected_rows
+        names = {
+            row[0]
+            for row in project.run_sql(
+                f"show tables from `{relation.database}`.`{relation.schema}`",
+                fetch="all",
+            )
+        }
+        assert relation.identifier in names
+        if not allow_stage:
+            assert relation.identifier + "__dbt_tmp" not in names
+        assert relation.identifier + "__dbt_backup" not in names
+
+    @staticmethod
+    def assert_one_overwrite(statements, name):
+        overwrites = [
+            sql for sql in statements if "insert overwrite table" in sql
+        ]
+        assert len(overwrites) == 1
+        assert name + "__dbt_tmp" in overwrites[0]
+        assert not any("truncate table" in sql for sql in statements)
+
+    @staticmethod
+    def write_csv(project, name, csv):
+        write_file(csv, project.project_root, "seeds", name + ".csv")
+
+    @pytest.mark.parametrize(
+        "name", ["iceberg_seed_reload_default", "iceberg_seed_reload_explicit"]
+    )
+    def test_repeated_seed_replaces_all_rows(self, project, name):
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        self.assert_one_overwrite(statements, name)
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        self.write_csv(project, name, "id,value\n1,ONE\n3,three\n")
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        self.assert_one_overwrite(statements, name)
+        self.assert_target(project, name, [(1, "ONE"), (3, "three")])
+
+    @pytest.mark.parametrize(
+        "name", ["iceberg_seed_empty_default", "iceberg_seed_empty_explicit"]
+    )
+    def test_header_only_seed_clears_all_rows(self, project, name):
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        self.write_csv(project, name, "id,value\n")
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        self.assert_one_overwrite(statements, name)
+        self.assert_target(project, name, [])
+
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, [])
+
+    def test_changed_schema_requires_full_refresh_without_changing_target(self, project):
+        name = "iceberg_seed_schema"
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        self.write_csv(project, name, "id,value,extra\n1,ONE,99\n3,three,123\n")
+        failure, statements = _run_and_capture_sql(
+            name, ["seed", "--select", name], expect_pass=False
+        )
+        assert len(failure.results) == 1
+        message = failure.results[0].message.lower()
+        assert "schema" in message
+        assert "full-refresh" in message
+        assert not any("insert overwrite table" in sql for sql in statements)
+        self.assert_target(project, name, EXPECTED_ROWS, allow_stage=True)
+
+        run_dbt(["seed", "--select", name, "--full-refresh"])
+        self.assert_target(
+            project, name, [(1, "ONE", 99), (3, "three", 123)],
+            columns=("id", "value", "extra"),
+        )
+
+        run_dbt(["seed", "--select", name])
+        self.assert_target(
+            project, name, [(1, "ONE", 99), (3, "three", 123)],
+            columns=("id", "value", "extra"),
+        )
+
+    @pytest.mark.parametrize(
+        "name,refresh_args",
+        [
+            ("iceberg_seed_failed_load", []),
+            ("iceberg_seed_failed_refresh", ["--full-refresh"]),
+        ],
+    )
+    def test_failed_binding_load_preserves_target_and_can_retry(
+        self, project, name, refresh_args
+    ):
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+
+        # The first two rows load successfully into the stage. A later binding
+        # batch fails, so publishing earlier batches would corrupt the target.
+        self.write_csv(project, name, "id,value\n3,three\n4,four\nbad,invalid\n")
+        failure, statements = _run_and_capture_sql(
+            name, ["seed", "--select", name] + refresh_args, expect_pass=False
+        )
+        assert len(failure.results) == 1
+        assert "bad can't cast to INT in strict mode" in failure.results[0].message
+        assert not any("insert overwrite table" in sql for sql in statements)
+        self.assert_target(project, name, EXPECTED_ROWS, allow_stage=True)
+
+        self.write_csv(project, name, "id,value\n1,ONE\n3,three\n")
+        run_dbt(["seed", "--select", name] + refresh_args)
+        self.assert_target(project, name, [(1, "ONE"), (3, "three")])
+
+    def test_reserved_quoted_columns_and_null_bindings(self, project):
+        name = "iceberg_seed_quoted"
+        expected_rows = [(1, "O'Reilly, value"), (2, None)]
+        columns = ("select", "value note")
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, expected_rows, columns=columns)
+
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        self.assert_one_overwrite(statements, name)
+        self.assert_target(project, name, expected_rows, columns=columns)
+
+    def test_multiple_binding_batches_are_published_with_one_overwrite(self, project):
+        name = "iceberg_seed_batches"
+        expected_rows = [(1, "one"), (2, "two"), (3, "three"), (4, "four"), (5, "five")]
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, expected_rows)
+
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        self.assert_one_overwrite(statements, name)
+        stage_inserts = [
+            sql for sql in statements
+            if "insert into" in sql and name + "__dbt_tmp" in sql
+        ]
+        assert len(stage_inserts) == 3
+        self.assert_target(project, name, expected_rows)
+
+    def test_seed_recovery_restores_missing_target_before_failed_load(self, project):
+        name = "iceberg_seed_recovery_missing"
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+        relation = relation_from_name(project.adapter, name)
+        project.run_sql(
+            f"alter table {relation} rename `{relation.identifier}__dbt_backup`"
+        )
+
+        self.write_csv(project, name, "id,value\n3,three\n4,four\nbad,invalid\n")
+        failure, statements = _run_and_capture_sql(
+            name, ["seed", "--select", name], expect_pass=False
+        )
+        assert "bad can't cast to INT in strict mode" in failure.results[0].message
+        assert not any("insert overwrite table" in sql for sql in statements)
+        self.assert_target(project, name, EXPECTED_ROWS, allow_stage=True)
+
+        self.write_csv(project, name, "id,value\n3,three\n4,four\n")
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, [(3, "three"), (4, "four")])
+
+    def test_seed_recovery_conflict_preserves_target_and_backup(self, project):
+        name = "iceberg_seed_recovery_conflict"
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, EXPECTED_ROWS)
+        relation = relation_from_name(project.adapter, name)
+        backup = relation.incorporate(
+            path={"identifier": relation.identifier + "__dbt_backup"}
+        )
+        project.run_sql(
+            f"create table {backup} as "
+            "select cast(9 as int) as id, cast('saved backup' as string) as value"
+        )
+
+        self.write_csv(project, name, "id,value\n3,three\n4,four\n")
+        failure, statements = _run_and_capture_sql(
+            name, ["seed", "--select", name], expect_pass=False
+        )
+        message = failure.results[0].message.lower()
+        assert "recovery backup" in message
+        assert "already exists" in message
+        assert not any(
+            "insert into" in sql
+            or "insert overwrite table" in sql
+            or "create table" in sql
+            or "drop table" in sql
+            for sql in statements
+        )
+        assert project.run_sql(
+            f"select id, value from {relation} order by id", fetch="all"
+        ) == EXPECTED_ROWS
+        assert project.run_sql(
+            f"select id, value from {backup} order by id", fetch="all"
+        ) == [(9, "saved backup")]
+
+        # This backup belongs exclusively to the fixture. Resolve the conflict
+        # explicitly, then prove the unchanged CSV can publish normally.
+        project.run_sql(f"drop table {backup}")
+        run_dbt(["seed", "--select", name])
+        self.assert_target(project, name, [(3, "three"), (4, "four")])
+
+
+class TestDorisIcebergSeedInferredTypes:
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        # Non-boolean numbers and text establish distinct inferred types.
+        return {"iceberg_seed_empty_inferred.csv": "id,value\n101,alpha\n202,beta\n"}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        # Deliberately omit engine and column_types, including global overrides.
+        return {}
+
+    def test_header_only_seed_keeps_inferred_schema_and_clears_rows(self, project):
+        name = "iceberg_seed_empty_inferred"
+        results = run_dbt(["seed", "--select", name])
+        assert results[0].node.config.column_types == {}
+        relation = relation_from_name(project.adapter, name)
+        assert project.run_sql(
+            f"select id, value from {relation} order by id", fetch="all"
+        ) == [(101, "alpha"), (202, "beta")]
+        columns_before = project.run_sql(f"describe {relation}", fetch="all")
+        print("ICEBERG_SEED_INFERRED_SCHEMA_BEFORE=" + repr(columns_before))
+        assert [column[0] for column in columns_before] == ["id", "value"]
+        assert columns_before[0][1].upper() != "BOOLEAN"
+        assert columns_before[1][1].upper() != "BOOLEAN"
+
+        write_file("id,value\n", project.project_root, "seeds", name + ".csv")
+        _, statements = _run_and_capture_sql(name, ["seed", "--select", name])
+        TestDorisIcebergSeed.assert_one_overwrite(statements, name)
+        assert project.run_sql(f"describe {relation}", fetch="all") == columns_before
+        TestDorisIcebergSeed.assert_target(project, name, [])
+
+        run_dbt(["seed", "--select", name])
+        assert project.run_sql(f"describe {relation}", fetch="all") == columns_before
+        TestDorisIcebergSeed.assert_target(project, name, [])
+
+
+class TestDorisIcebergSeedInvalidEngine:
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {"iceberg_seed_invalid_engine.csv": "id,value\n1,first\n2,second\n"}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {
+            "seeds": {
+                "+engine": "{{ var('seed_engine', 'iceberg') }}",
+                "+column_types": {"id": "INT", "value": "STRING"},
+            }
+        }
+
+    def test_invalid_olap_engine_full_refresh_preserves_existing_iceberg(self, project):
+        name = "iceberg_seed_invalid_engine"
+        run_dbt(["seed", "--select", name])
+        TestDorisIcebergSeed.assert_target(project, name, EXPECTED_ROWS)
+
+        failure = run_dbt(
+            ["seed", "--select", name, "--full-refresh", "--vars", "{seed_engine: OLAP}"],
+            expect_pass=False,
+        )
+        assert failure.results[0].node.config.get("engine").upper() == "OLAP"
+        message = failure.results[0].message.lower()
+        assert "olap" in message
+        assert "catalog" in message
+        TestDorisIcebergSeed.assert_target(project, name, EXPECTED_ROWS)
+
+        run_dbt(["seed", "--select", name])
+        TestDorisIcebergSeed.assert_target(project, name, EXPECTED_ROWS)

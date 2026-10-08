@@ -639,6 +639,216 @@ class TestSeedEngine:
         else:
             assert f"ENGINE = {engine}" in sql
 
+    @pytest.mark.parametrize(
+        "target_catalog,stage_catalog,expects_distribution",
+        [
+            ("internal", "iceberg_catalog", False),
+            ("iceberg_catalog", "internal", True),
+        ],
+    )
+    def test_seed_table_creation_uses_explicit_relation(
+        self, target_catalog, stage_catalog, expects_distribution
+    ):
+        runner = self.runner(target_catalog, {})
+        stage = FakeRelation(database=stage_catalog, identifier="seed__dbt_tmp")
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+            stage,
+        )
+
+        assert sql.startswith(f"create table {stage.render()} (")
+        assert "my_model" not in sql
+        assert ("DISTRIBUTED BY HASH" in sql) is expects_distribution
+        assert len(runner.statements) == 1
+        assert " ".join(runner.statements[0].sql.split()) == sql
+
+    def test_seed_table_creation_preserves_two_argument_call(self):
+        runner = self.runner("iceberg_catalog", {"engine": "iceberg"})
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {"column_types": {"id": "BIGINT"}}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert sql.startswith(f"create table {runner.context['this'].render()} (")
+        assert "`id` BIGINT" in sql
+        assert "ENGINE = iceberg" in sql
+
+    def test_empty_seed_uses_existing_types_by_normalized_column_name(self):
+        runner = self.runner("iceberg_catalog", {})
+        inferred_columns = []
+
+        def infer_type(table, index):
+            inferred_columns.append(table.column_names[index])
+            return "BOOLEAN"
+
+        runner.context["adapter"].convert_type = infer_type
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["ID", "Label", "new_flag"], rows=[]),
+            stage,
+            inferred_column_types={"id": "BIGINT", "label": "STRING"},
+        )
+
+        assert "`ID` BIGINT" in sql
+        assert "`Label` STRING" in sql
+        assert "`new_flag` BOOLEAN" in sql
+        assert inferred_columns == ["new_flag"]
+
+    def test_explicit_seed_types_override_empty_seed_fallback(self):
+        runner = self.runner("iceberg_catalog", {})
+
+        def unexpected_inference(table, index):
+            raise AssertionError("An existing empty seed column must retain its type")
+
+        runner.context["adapter"].convert_type = unexpected_inference
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {"column_types": {"id": "INT", "Label": "VARCHAR(40)"}}},
+            SimpleNamespace(column_names=["id", "Label"], rows=[]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+            inferred_column_types={"id": "BIGINT", "label": "STRING"},
+        )
+
+        assert "`id` INT" in sql
+        assert "`Label` VARCHAR(40)" in sql
+
+
+class TestSeedCsvLoading:
+    @staticmethod
+    def runner(batch_size=2, binding_char="%s"):
+        queries = []
+
+        class SeedAdapter(FakeAdapter):
+            @staticmethod
+            def quote_seed_column(column_name, quote_columns):
+                if quote_columns is False:
+                    return column_name
+                return "`" + column_name.replace("`", "``") + "`"
+
+            @staticmethod
+            def add_query(sql, bindings, abridge_sql_log):
+                queries.append((" ".join(sql.split()), bindings, abridge_sql_log))
+
+        adapter = SeedAdapter()
+        runner = MacroRunner(
+            "materializations/seed/helpers.sql",
+            context={
+                "adapter": adapter,
+                "this": FakeRelation(database="iceberg_catalog", identifier="seed"),
+                "get_batch_size": lambda: batch_size,
+                "get_binding_char": lambda: binding_char,
+                "get_seed_column_quoted_csv": lambda model, names: ", ".join(
+                    adapter.quote_seed_column(
+                        name, model["config"].get("quote_columns")
+                    )
+                    for name in names
+                ),
+            },
+        )
+        return runner, queries
+
+    def test_batches_bind_all_values_and_only_write_to_stage(self):
+        runner, queries = self.runner(batch_size=2)
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+        table = SimpleNamespace(
+            column_names=["id", "label", "nullable"],
+            rows=[
+                (1, "O'Reilly", None),
+                (2, "path\\value", ""),
+                (3, "snow\u2603", False),
+            ],
+        )
+
+        first_batch_sql = runner.sql(
+            "doris__load_csv_rows_into_relation", {"config": {}}, table, stage
+        )
+
+        assert len(queries) == 2
+        assert [query[1] for query in queries] == [
+            [1, "O'Reilly", None, 2, "path\\value", ""],
+            [3, "snow\u2603", False],
+        ]
+        assert [query[0].count("%s") for query in queries] == [6, 3]
+        assert all(query[2] is True for query in queries)
+        assert all(query[0].startswith(f"insert into {stage.render()} (") for query in queries)
+        assert all("`seed`" not in query[0] for query in queries)
+        assert all("O'Reilly" not in query[0] for query in queries)
+        assert all("path\\value" not in query[0] for query in queries)
+        assert first_batch_sql == queries[0][0]
+
+    def test_empty_csv_returns_empty_sql_without_queries(self):
+        runner, queries = self.runner()
+
+        sql = runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {}},
+            SimpleNamespace(column_names=["id", "label"], rows=[]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert sql == ""
+        assert queries == []
+
+    def test_csv_column_names_are_quoted_without_touching_bound_data(self):
+        runner, queries = self.runner()
+
+        runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {}},
+            SimpleNamespace(
+                column_names=["select", "order details", "tick`name"],
+                rows=[("a'quoted", None, "value")],
+            ),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert "(`select`, `order details`, `tick``name`)" in queries[0][0]
+        assert queries[0][1] == ["a'quoted", None, "value"]
+
+    def test_quote_columns_false_and_binding_char_are_respected(self):
+        runner, queries = self.runner(binding_char="?")
+
+        runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {"quote_columns": False}},
+            SimpleNamespace(column_names=["id", "label"], rows=[(1, "one")]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert "(id,label) values (?,?)" in queries[0][0].replace(", ", ",")
+        assert queries[0][1] == [1, "one"]
+
+    def test_later_batch_failure_propagates_without_target_write(self):
+        runner, queries = self.runner(batch_size=1)
+        capture = runner.context["adapter"].add_query
+
+        def fail_second_batch(sql, bindings, abridge_sql_log):
+            capture(sql, bindings, abridge_sql_log)
+            if len(queries) == 2:
+                raise RuntimeError("CSV batch rejected")
+
+        runner.context["adapter"].add_query = fail_second_batch
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+        with pytest.raises(RuntimeError, match="CSV batch rejected"):
+            runner.render(
+                "doris__load_csv_rows_into_relation",
+                {"config": {}},
+                SimpleNamespace(column_names=["id"], rows=[(1,), (2,), (3,)]),
+                stage,
+            )
+
+        assert len(queries) == 2
+        assert all(query[0].startswith(f"insert into {stage.render()} (") for query in queries)
+
 
 class TestSingleStatementDDL:
     """dbt sends one statement per `execute()`; the connector cannot take two.

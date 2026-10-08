@@ -194,8 +194,8 @@ validate; OLAP-only options are incompatible with Iceberg targets.
 
 First creation is covered for table models, column documentation, incremental
 models with a logical key, and seeds with Iceberg-compatible column types.
-Subsequent Iceberg merge and ordinary seed reload still depend on operations
-that were rejected by the Doris 4.1.3 Iceberg connector in local verification.
+Subsequent Iceberg merge still depends on operations that were rejected by the
+Doris 4.1.3 Iceberg connector in local verification.
 
 Table model reruns and incremental `--full-refresh` use a non-atomic replacement
 for external targets. The adapter renames the old target to dbt's backup name,
@@ -234,6 +234,27 @@ its asynchronous job wait. Supported type changes depend on the connector and
 its actual ALTER result. Schema DDL and overwrite are separate statements and
 do not provide rollback for an entire dbt run. Incremental comment updates were
 not verified by these tests.
+
+Iceberg seeds load every bound CSV batch into a private table before publishing
+any of it. Ordinary reload verifies the CSV schema and performs one native
+INSERT OVERWRITE, avoiding unsupported TRUNCATE and repeated batch overwrites.
+A header-only CSV clears an existing unpartitioned target; without explicit
+column types, ordinary empty reload retains its existing field types. Explicit
+column types take precedence. A schema change requires `dbt seed --full-refresh`.
+
+First creation publishes the completely loaded stage. Full refresh uses the
+backup replacement described above, after all CSV batches have loaded. A
+database loading error leaves the existing target data intact for retry; the
+adapter retains Doris's configured casting behavior. If a missing target has a
+backup, Seed can restore it before retrying. When both target and backup exist,
+the adapter refuses to remove the recovery copy automatically. These paths
+were verified for unpartitioned Iceberg on Doris 4.1.3. Full-refresh publication
+remains non-atomic, and post-publication errors do not roll data back.
+
+Internal OLAP seeds delegate to Core's existing materialization: ordinary
+reload remains TRUNCATE plus INSERT, and full refresh remains DROP plus CREATE
+and INSERT. CSV batching, bindings, hooks, grants, documentation and result row
+counts retain Core's behavior.
 
 The opt-in functional regression uses the configured Doris test endpoint and
 an existing writable Catalog:
