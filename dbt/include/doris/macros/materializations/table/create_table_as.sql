@@ -38,10 +38,11 @@
     ) %}
     {{ sql_header if include_sql_header and sql_header is not none }}
     create table {{ table }}
+    {{ doris__engine() }}
     {{ doris__duplicate_key() }}
     {{ doris__table_comment()}}
     {{ doris__partition_by() }}
-    {{ doris__distributed_by() }}
+    {{ doris__distributed_by(relation=relation) }}
     {{ doris__properties() }} as {{ select_sql }};
 
 {%- endmacro %}
@@ -58,15 +59,24 @@
     {% set select_sql = (
         sql if sql_is_prepared else doris__table_colume_type(sql)
     ) %}
+    {% set is_olap = doris__is_olap_table(relation) %}
+    {% set default_properties = (
+        {'enable_unique_key_merge_on_write': 'true'} if is_olap else none
+    ) %}
     {{ sql_header if include_sql_header and sql_header is not none }}
     create table {{ table }}
-    {{ doris__unique_key() }}
+    {{ doris__engine() }}
+    {# dbt unique_key is a logical matching key; only OLAP tables implement it
+       through a Doris physical UNIQUE KEY and Merge-on-Write property. #}
+    {% if is_olap %}
+        {{ doris__unique_key() }}
+    {% else %}
+        {{ doris__duplicate_key() }}
+    {% endif %}
     {{ doris__table_comment()}}
     {{ doris__partition_by() }}
-    {{ doris__distributed_by() }}
-    {{ doris__properties({
-        'enable_unique_key_merge_on_write': 'true'
-    }) }} as {{ select_sql }};
+    {{ doris__distributed_by(relation=relation) }}
+    {{ doris__properties(default_properties) }} as {{ select_sql }};
 
 {%- endmacro %}
 
@@ -127,6 +137,10 @@
     {% endcall %}
 
     {%- set source_columns = adapter.get_columns_in_relation(source_relation) -%}
+    {% set unique_olap = unique and doris__is_olap_table(relation) %}
+    {% set default_properties = (
+        {'enable_unique_key_merge_on_write': 'true'} if unique_olap else none
+    ) %}
     {% call statement('create_documented_table') %}
         create table {{ relation }} (
         {%- for column in source_columns %}
@@ -138,21 +152,16 @@
             {{- "," if not loop.last }}
         {%- endfor %}
         )
-        {% if unique %}
+        {{ doris__engine() }}
+        {% if unique_olap %}
             {{ doris__unique_key() }}
         {% else %}
             {{ doris__duplicate_key() }}
         {% endif %}
         {{ doris__table_comment() }}
         {{ doris__partition_by() }}
-        {{ doris__distributed_by() }}
-        {% if unique %}
-            {{ doris__properties({
-                'enable_unique_key_merge_on_write': 'true'
-            }) }}
-        {% else %}
-            {{ doris__properties() }}
-        {% endif %}
+        {{ doris__distributed_by(relation=relation) }}
+        {{ doris__properties(default_properties) }}
     {% endcall %}
 
     {% call statement('main') %}
@@ -203,15 +212,21 @@
 
 
 {% macro doris__create_incremental_staging_table(relation, source_sql) -%}
-    {% set helper_properties = doris__physical_helper_table_properties() %}
+    {% set is_olap = doris__is_olap_table(relation) %}
+    {% set helper_properties = (
+        doris__physical_helper_table_properties() if is_olap else {}
+    ) %}
 
     create table {{ relation }}
-    distributed by random buckets auto
-    properties (
-        {% for key, value in helper_properties.items() %}
-        "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-    )
+    {{ doris__engine() }}
+    {% if is_olap %}
+        distributed by random buckets auto
+        properties (
+            {% for key, value in helper_properties.items() %}
+            "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
+            {% endfor %}
+        )
+    {% endif %}
     as {{ source_sql }};
 {%- endmacro %}
 
@@ -227,16 +242,10 @@
     columns remain valid snapshot data.
 --#}
 {% macro doris__create_view_snapshot_table(relation, source_relation) -%}
-    {% set helper_properties = doris__physical_helper_table_properties() %}
-
-    create table {{ relation }}
-    distributed by random buckets auto
-    properties (
-        {% for key, value in helper_properties.items() %}
-        "{{ key }}" = "{{ value }}"{% if not loop.last %},{% endif %}
-        {% endfor %}
-    )
-    as select * from {{ source_relation }};
+    {{ return(doris__create_incremental_staging_table(
+        relation,
+        'select * from ' ~ source_relation
+    )) }}
 {%- endmacro %}
 
 

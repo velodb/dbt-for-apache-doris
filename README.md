@@ -167,6 +167,46 @@ columns from the selected Catalog and includes them in `dbt docs generate`.
 The External Catalog must already exist in Doris. DDL and write support depend
 on the corresponding Doris Catalog connector.
 
+### Creating Iceberg targets
+
+Set the profile's `database` to an existing writable Iceberg Catalog and
+`schema` to a Database inside it. An omitted `engine` leaves the SQL engine
+clause unset so Doris can infer it from the target Catalog. An explicit
+`engine='iceberg'` is emitted in CREATE TABLE. Catalog-based inference was
+verified against Doris 4.1.3; an older Doris release may require the explicit
+engine. Explicit engines are preserved, including incompatible values that
+Doris must reject.
+
+The existing Catalog discovery workaround used by the functional regression
+is the following project setting, for a Catalog name that does not require
+identifier quoting:
+
+```yaml
+quoting:
+  database: false
+```
+
+Iceberg CREATE paths do not automatically add Doris UNIQUE KEY,
+Merge-on-Write properties, or default OLAP distribution. A dbt `unique_key`
+remains a logical matching key. Explicit physical options such as
+`duplicate_key`, `distributed_by`, and `properties` are preserved for Doris to
+validate; OLAP-only options are incompatible with Iceberg targets.
+
+First creation is covered for table models, column documentation, incremental
+models with a logical key, and seeds with Iceberg-compatible column types.
+This does not enable subsequent Iceberg merge, atomic table replacement, or
+ordinary seed reload: those flows still depend on operations that were rejected
+by the Doris 4.1.3 Iceberg connector in local verification.
+
+The opt-in functional regression uses the configured Doris test endpoint and
+an existing writable Catalog:
+
+```bash
+DBT_DORIS_ICEBERG_CATALOG=iceberg_catalog make test
+```
+
+Without that environment variable, Iceberg-specific tests are skipped.
+
 ## End-to-end examples
 
 The [`examples`](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples)

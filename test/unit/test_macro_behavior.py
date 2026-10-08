@@ -26,6 +26,7 @@ a pull request; these can.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -195,6 +196,243 @@ class TestGrants:
             "grant_2",
         ]
         assert len(runner.statements) == 2
+
+
+class TestCreateTableEngine:
+    """Let Doris infer omitted engines and keep OLAP DDL out of lake tables."""
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", ["iceberg", "ICEBERG", "Iceberg"])
+    def test_explicit_iceberg_engine_is_emitted(self, macro, engine):
+        sql = table_runner(config={"engine": engine, "unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("database", [None, "internal", "iceberg_catalog"])
+    def test_omitted_engine_is_inferred_by_doris(self, macro, database):
+        sql = table_runner(config={"unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database=database),
+            "select cast(1 as int) as id",
+        )
+
+        assert "ENGINE" not in sql.upper()
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_unique_ctas_has_no_olap_key_or_default_property(self, engine):
+        config = {"unique_key": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "UNIQUE KEY" not in sql.upper()
+        assert "enable_unique_key_merge_on_write" not in sql
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    def test_internal_unique_ctas_keeps_olap_layout(self, database, engine):
+        config = {"unique_key": ["id"], "distributed_by": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(database=database),
+            "select cast(1 as int) as id",
+        )
+
+        assert "UNIQUE KEY ( `id` )" in sql
+        assert "DISTRIBUTED BY HASH ( `id` )" in sql
+        assert '"enable_unique_key_merge_on_write" = "true"' in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", ["OLAP", "olap"])
+    def test_explicit_olap_engine_in_external_catalog_is_not_rewritten(
+        self, macro, engine
+    ):
+        sql = table_runner(config={"engine": engine, "unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    def test_explicit_external_distribution_is_not_silently_dropped(
+        self, macro, engine
+    ):
+        config = {"unique_key": ["id"], "distributed_by": ["id"], "buckets": 8}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "DISTRIBUTED BY HASH ( `id` ) BUCKETS 8" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    def test_explicit_external_duplicate_key_is_not_silently_dropped(self, macro):
+        sql = table_runner(
+            config={
+                "engine": "iceberg",
+                "unique_key": ["id"],
+                "duplicate_key": ["id"],
+            }
+        ).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "DUPLICATE KEY ( `id` )" in sql
+        assert "UNIQUE KEY" not in sql.upper()
+
+    @pytest.mark.parametrize(
+        "macro",
+        [
+            "doris__create_incremental_staging_table",
+            "doris__create_view_snapshot_table",
+        ],
+    )
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_physical_helpers_do_not_add_olap_defaults(self, macro, engine):
+        config = {"unique_key": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        source = (
+            "select cast(1 as int) as id"
+            if macro == "doris__create_incremental_staging_table"
+            else FakeRelation(database="iceberg_catalog", identifier="source_view")
+        )
+        sql = table_runner(config=config).sql(
+            macro,
+            FakeRelation(database="iceberg_catalog", identifier="target__dbt_tmp"),
+            source,
+        )
+
+        assert "DISTRIBUTED BY" not in sql.upper()
+        assert "enable_duplicate_without_keys_by_default" not in sql
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    @pytest.mark.parametrize("unique", [False, True])
+    def test_external_documented_table_and_source_do_not_add_olap_defaults(
+        self, engine, unique
+    ):
+        class DocumentedAdapter(FakeAdapter):
+            @staticmethod
+            def get_columns_in_relation(relation):
+                return [SimpleNamespace(name="id", data_type="INT")]
+
+        config = {"unique_key": ["id"], "persist_docs": {"columns": True}}
+        if engine is not None:
+            config["engine"] = engine
+        runner = table_runner(
+            config=config,
+            model={"columns": {"id": {"description": "Identifier"}}},
+        )
+        runner.context["adapter"] = DocumentedAdapter()
+        runner.render(
+            "doris__create_documented_table_as",
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+            unique=unique,
+        )
+        creates = [
+            statement.sql
+            for statement in runner.statements
+            if statement.name
+            in {"create_documented_table_source", "create_documented_table"}
+        ]
+
+        assert len(creates) == 2
+        for sql in creates:
+            assert "UNIQUE KEY" not in sql.upper()
+            assert "DISTRIBUTED BY" not in sql.upper()
+            assert "enable_unique_key_merge_on_write" not in sql
+            assert "enable_duplicate_without_keys_by_default" not in sql
+            if engine is None:
+                assert "ENGINE" not in sql.upper()
+            else:
+                assert f"ENGINE = {engine}" in sql
+        assert "COMMENT 'Identifier'" in creates[1]
+
+
+class TestSeedEngine:
+    @staticmethod
+    def runner(database, config):
+        class SeedAdapter(FakeAdapter):
+            @staticmethod
+            def convert_type(agate_table, column_index):
+                return "INT"
+
+            @staticmethod
+            def quote_seed_column(column_name, quote_columns):
+                return f"`{column_name}`"
+
+        return MacroRunner(
+            "materializations/seed/helpers.sql",
+            "adapters/relation.sql",
+            context={
+                "adapter": SeedAdapter(),
+                "config": FakeConfig(config),
+                "this": FakeRelation(database=database),
+            },
+        )
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_seed_does_not_add_engine_or_distribution_defaults(self, engine):
+        config = {} if engine is None else {"engine": engine}
+        sql = self.runner("iceberg_catalog", config).sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert "DISTRIBUTED BY" not in sql.upper()
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    def test_internal_seed_keeps_default_hash_distribution(self, database, engine):
+        config = {} if engine is None else {"engine": engine}
+        sql = self.runner(database, config).sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert "DISTRIBUTED BY HASH ( `id` ) BUCKETS 10" in sql
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
 
 
 class TestSingleStatementDDL:

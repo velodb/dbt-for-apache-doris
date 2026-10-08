@@ -26,9 +26,21 @@
 {%- endmacro %}
 
 {% macro doris__engine() -%}
-    {% set label = 'ENGINE' %}
-    {% set engine = config.get('engine', 'OLAP') %}
-    {{ label }} = {{ engine }}
+    {# An omitted engine belongs to the target Catalog. Defaulting it to OLAP
+       prevents external Catalogs from choosing their own table implementation. #}
+    {% set engine = config.get('engine', none) %}
+    {% if engine is not none %}
+        ENGINE = {{ engine }}
+    {% endif %}
+{%- endmacro %}
+
+{% macro doris__is_olap_table(relation=none) -%}
+    {% set engine = config.get('engine', none) %}
+    {% if engine is not none %}
+        {{ return(engine | lower == 'olap') }}
+    {% endif %}
+    {% set catalog = relation.database if relation is not none else none %}
+    {{ return(not catalog or catalog | lower == 'internal') }}
 {%- endmacro %}
 
 {% macro doris__partition_by() -%}
@@ -95,10 +107,9 @@
   {% endif %}
 {%- endmacro %}
 
-{% macro doris__distributed_by(column_names=none) -%}
-  {% set engine = config.get('engine', validator=validation.any[basestring]) %}
+{% macro doris__distributed_by(column_names=none, relation=none) -%}
   {% set cols = config.get('distributed_by', validator=validation.any[list, basestring]) %}
-  {% if cols is none and engine in [none,'OLAP'] %}
+  {% if cols is none and doris__is_olap_table(relation) %}
     {% set cols = column_names %}
   {% endif %}
 

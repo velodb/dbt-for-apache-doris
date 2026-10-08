@@ -51,7 +51,7 @@
     {{ doris__duplicate_key() }}
     {{ doris__table_comment() }}
     {{ doris__partition_by() }}
-    {{ doris__distributed_by(agate_table.column_names[0:1]) }}
+    {{ doris__distributed_by(agate_table.column_names[0:1], relation=this) }}
     {{ doris__properties() }}
     {% endset %}
 

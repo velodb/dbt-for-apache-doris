@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+# encoding: utf-8
+
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements. See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership. The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License. You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied. See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+"""First CREATE coverage against an operator-provided Iceberg catalog.
+
+Set DBT_DORIS_ICEBERG_CATALOG to an existing writable Iceberg catalog and use
+the normal DORIS_TEST_* connection settings. These tests create isolated test
+namespaces, but do not set up a REST service or object storage. A first CREATE
+for an incremental model does not exercise subsequent merge or table swaps.
+"""
+
+import os
+
+import pytest
+import yaml
+from dbt.tests.util import relation_from_name, run_dbt, write_file
+
+ICEBERG_CATALOG = os.getenv("DBT_DORIS_ICEBERG_CATALOG")
+pytestmark = pytest.mark.skipif(
+    not ICEBERG_CATALOG,
+    reason="DBT_DORIS_ICEBERG_CATALOG must name a writable Iceberg catalog",
+)
+
+DATA_SQL = """
+select cast(1 as int) as id, cast('first' as string) as value
+union all
+select cast(2 as int) as id, cast('second' as string) as value
+"""
+EXPECTED_ROWS = [(1, "first"), (2, "second")]
+CREATE_CONFIGS = {
+    "iceberg_table_default": "materialized='table'",
+    "iceberg_table_explicit": "materialized='table', engine='iceberg'",
+    "iceberg_merge_initial": (
+        "materialized='incremental', incremental_strategy='merge', unique_key=['id']"
+    ),
+    "iceberg_table_documented": ("materialized='table', persist_docs={'columns': true}"),
+    "iceberg_merge_documented": (
+        "materialized='incremental', incremental_strategy='merge', unique_key=['id'], "
+        "engine='iceberg', persist_docs={'columns': true}"
+    ),
+}
+
+
+@pytest.fixture(scope="class")
+def dbt_profile_target(dbt_profile_target):
+    return {**dbt_profile_target, "database": ICEBERG_CATALOG}
+
+
+@pytest.fixture(scope="class")
+def dbt_project_yml(project_root, project_config_update):
+    # The suite's default fixture injects OLAP replication properties. External
+    # CREATE must receive only this project's explicit resource settings.
+    project_config = {
+        "name": "test",
+        "profile": "test",
+        "flags": {"send_anonymous_usage_stats": False},
+        # list_schemas currently interpolates a dbt-quoted catalog as a string.
+        "quoting": {"database": False},
+    }
+    project_config.update(project_config_update)
+    write_file(yaml.safe_dump(project_config), project_root, "dbt_project.yml")
+    return project_config
+
+
+class TestDorisIcebergFirstCreate:
+    @pytest.fixture(scope="class")
+    def models(self):
+        models = {
+            f"{name}.sql": "{{ config(" + config + ") }}\n" + DATA_SQL
+            for name, config in CREATE_CONFIGS.items()
+        }
+        models["iceberg_explicit_olap.sql"] = (
+            "{{ config(materialized='table', engine='OLAP') }}\n" + DATA_SQL
+        )
+        models["schema.yml"] = yaml.safe_dump(
+            {
+                "version": 2,
+                "models": [
+                    {
+                        "name": name,
+                        "columns": [
+                            {"name": "id", "description": "Issue 1 identifier"},
+                            {"name": "value", "description": "Issue 1 value"},
+                        ],
+                    }
+                    for name in ("iceberg_table_documented", "iceberg_merge_documented")
+                ],
+            }
+        )
+        return models
+
+    @pytest.fixture(scope="class")
+    def seeds(self):
+        return {"iceberg_seed_default.csv": "id,value\n1,first\n2,second\n"}
+
+    @pytest.fixture(scope="class")
+    def project_config_update(self):
+        return {"seeds": {"+column_types": {"id": "INT", "value": "STRING"}}}
+
+    @staticmethod
+    def assert_iceberg_rows(project, name):
+        relation = relation_from_name(project.adapter, name)
+        ddl = project.run_sql(f"show create table {relation}", fetch="one")[1]
+        assert "ICEBERG_EXTERNAL_TABLE" in ddl.upper()
+        assert "UNIQUE KEY" not in ddl.upper()
+        assert "enable_unique_key_merge_on_write" not in ddl.lower()
+        assert (
+            project.run_sql(f"select id, value from {relation} order by id", fetch="all")
+            == EXPECTED_ROWS
+        )
+        return ddl
+
+    @pytest.mark.parametrize("name", CREATE_CONFIGS)
+    def test_model_first_create(self, project, name):
+        # Each model name runs once. Reruns would test unsupported lifecycle
+        # operations rather than the CREATE boundary guarded by this regression.
+        results = run_dbt(["run", "--select", name])
+        assert len(results) == 1
+        ddl = self.assert_iceberg_rows(project, name)
+        if name.endswith("_documented"):
+            assert "Issue 1 identifier" in ddl
+            assert "Issue 1 value" in ddl
+
+    def test_seed_first_create_without_engine(self, project):
+        results = run_dbt(["seed", "--select", "iceberg_seed_default"])
+        assert len(results) == 1
+        self.assert_iceberg_rows(project, "iceberg_seed_default")
+
+    def test_explicit_olap_is_rejected(self, project):
+        failure = run_dbt(["run", "--select", "iceberg_explicit_olap"], expect_pass=False)
+        assert len(failure.results) == 1
+        error = failure.results[0].message.lower()
+        assert "olap" in error
+        assert "catalog" in error
+
+        relation = relation_from_name(project.adapter, "iceberg_explicit_olap")
+        tables = project.run_sql(
+            f"show tables from `{relation.database}`.`{relation.schema}`", fetch="all"
+        )
+        names = {row[0] for row in tables}
+        assert relation.identifier not in names
+        assert relation.identifier + "__dbt_tmp" not in names
