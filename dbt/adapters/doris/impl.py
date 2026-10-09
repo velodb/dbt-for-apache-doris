@@ -56,6 +56,37 @@ _DORIS_DEVELOPMENT_VERSION = re.compile(
     r"^doris-0\.0\.0-[0-9a-f]{7,64}$"
 )
 
+_TABLE_GRANT_PRIVILEGES = {
+    "select_priv": "select", "load_priv": "insert", "alter_priv": "alter",
+    "create_priv": "create", "drop_priv": "drop", "show_view_priv": "show_view",
+}
+
+
+def _table_grants_for_relation(table, relation):
+    """SHOW GRANTS preserves Catalog names, unlike TABLE_PRIVILEGES ('def')."""
+    catalog = relation.database or "internal"
+    if catalog.casefold() == "internal":
+        catalog = "internal"
+    object_name = f"{catalog}.{relation.schema}.{relation.identifier}"
+    if "TablePrivs" not in table.column_names:
+        raise dbt.exceptions.DbtRuntimeError(
+            "SHOW GRANTS did not return TablePrivs; cannot reconcile " + object_name
+        )
+    result = set()
+    for row in table.rows:
+        for entry in str(row["TablePrivs"] or "").split(";"):
+            name, separator, privileges = entry.strip().rpartition(": ")
+            if separator and name == object_name:
+                for privilege in privileges.split(","):
+                    normalized = privilege.strip().casefold()
+                    if normalized not in _TABLE_GRANT_PRIVILEGES:
+                        raise dbt.exceptions.DbtRuntimeError(
+                            f"Cannot reconcile unsupported table privilege {privilege!r} "
+                            f"on {object_name}"
+                        )
+                    result.add(_TABLE_GRANT_PRIVILEGES[normalized])
+    return result
+
 
 @dataclass
 class DorisMaterializedViewAdapterResponse(AdapterResponse):
@@ -185,6 +216,19 @@ class DorisAdapter(SQLAdapter):
                 "Table first."
             )
         return super().rename_relation(from_relation, to_relation)
+
+    @available
+    def get_relation_grants(self, relation):
+        """Resolve exact Catalog grants for candidate table principals."""
+        sql = self.execute_macro("doris__get_grant_candidates_sql", kwargs={"relation": relation})
+        _, candidates = self.execute(sql, auto_begin=False, fetch=True)
+        grants = {}
+        for grantee in sorted({str(row[0]) for row in candidates.rows}):
+            identity = self.execute_macro("doris__grant_user_identity", kwargs={"grantee": grantee})
+            _, current = self.execute("show grants for " + identity, auto_begin=False, fetch=True)
+            for privilege in sorted(_table_grants_for_relation(current, relation)):
+                grants.setdefault(privilege, []).append(grantee)
+        return grants
 
     def expand_column_types(self, goal, current):
         """Widen string columns using Doris's case-insensitive name rules."""

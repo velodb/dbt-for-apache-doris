@@ -302,11 +302,31 @@
              The column type is deliberately omitted: Doris accepts
              `MODIFY COLUMN <col> COMMENT '<c>'`, and naming a type there is
              rejected for distribution and key columns. --#}
+        {% if not doris__is_olap_table(relation) %}
+            {% set attributes = run_query(
+                'select column_name,column_type,is_nullable,column_default from '
+                ~ doris__information_schema_name(relation.database)
+                ~ ".columns where table_schema='"
+                ~ (relation.schema | replace("\\", "\\\\") | replace("'", "\\'"))
+                ~ "' and table_name='"
+                ~ (relation.identifier | replace("\\", "\\\\") | replace("'", "\\'")) ~ "'"
+            ) %}
+            {% set column_attributes = {} %}
+            {% for row in attributes %}
+                {% do column_attributes.update({row[0] | lower: row}) %}
+            {% endfor %}
+        {% endif %}
         {% for column_name, column_info in column_dict.items() %}
             {% set comment = (column_info.get('description') or '') if column_info is mapping else (column_info or '') %}
             {% if comment %}
                 {% call statement('alter_column_comment') %}
-                    alter table {{ relation }} modify column `{{ column_name | replace("`", "``") }}` comment {{ doris__alter_comment_literal(comment) }}
+                    alter table {{ relation }} modify column `{{ column_name | replace("`", "``") }}`{% if not doris__is_olap_table(relation) %}
+                        {% set attributes = column_attributes[column_name | lower] %}
+                        {{ attributes[1] }} {{ 'NOT NULL' if attributes[2] | upper == 'NO' else 'NULL' }}
+                        {% if attributes[3] is not none %}
+                            DEFAULT '{{ attributes[3] | replace("\\", "\\\\") | replace("'", "\\'") }}'
+                        {% endif %}
+                    {% endif %} comment {{ doris__alter_comment_literal(comment) }}
                 {% endcall %}
             {% endif %}
         {% endfor %}
@@ -319,7 +339,8 @@
          through Doris releases whose ALTER COMMENT parser preserves escapes. --#}
     {% if for_relation and config.persist_relation_docs() and model.description %}
         {% set relation_rows = run_query(
-            "select table_comment from information_schema.tables where table_schema = '"
+            'select table_comment from ' ~ doris__information_schema_name(relation.database)
+            ~ ".tables where table_schema = '"
             ~ (relation.schema | replace("\\", "\\\\") | replace("'", "\\'"))
             ~ "' and table_name = '"
             ~ (relation.identifier | replace("\\", "\\\\") | replace("'", "\\'"))
@@ -333,7 +354,8 @@
 
     {% if for_columns and config.persist_column_docs() and model.columns %}
         {% set column_rows = run_query(
-            "select column_name, column_comment from information_schema.columns where table_schema = '"
+            'select column_name, column_comment from ' ~ doris__information_schema_name(relation.database)
+            ~ ".columns where table_schema = '"
             ~ (relation.schema | replace("\\", "\\\\") | replace("'", "\\'"))
             ~ "' and table_name = '"
             ~ (relation.identifier | replace("\\", "\\\\") | replace("'", "\\'"))

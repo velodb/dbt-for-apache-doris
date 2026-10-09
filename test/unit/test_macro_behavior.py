@@ -120,11 +120,11 @@ class TestGrants:
 
     def test_show_grants_uses_doris_table_privileges(self):
         sql = self.runner().sql(
-            "doris__get_show_grant_sql",
+            "doris__get_grant_candidates_sql",
             FakeRelation(schema="analytics", identifier="orders"),
         )
 
-        assert "from information_schema.table_privileges" in sql
+        assert "from `internal`.information_schema.table_privileges" in sql
         assert "table_schema = 'analytics'" in sql
         assert "table_name = 'orders'" in sql
         assert "as grantee" in sql
@@ -1342,7 +1342,7 @@ class TestPersistDocs:
     """
 
     def runner(self):
-        return MacroRunner("adapters/columns.sql")
+        return MacroRunner("adapters/columns.sql", "adapters/relation.sql")
 
     def test_column_comment_uses_description_only(self):
         runner = self.runner()
