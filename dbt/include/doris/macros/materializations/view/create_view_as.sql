@@ -15,6 +15,20 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+{% macro doris__validate_view_target(relation) -%}
+  {# CREATE VIEW only accepts the internal Catalog, regardless of engine.
+     Materializations must validate this before hooks or dropping old objects. #}
+  {% set catalog = relation.database or 'internal' %}
+  {% if catalog | lower != 'internal' %}
+    {% do exceptions.raise_compiler_error(
+        "Doris cannot create a View in external Catalog '" ~ catalog
+        ~ "' for " ~ relation ~ ". Keep materialized='table' or use an "
+        ~ "internal Catalog for View targets."
+    ) %}
+  {% endif %}
+{%- endmacro %}
+
+
 {% macro doris__view_columns_with_comments(sql, sql_header) -%}
   {% if config.persist_column_docs() %}
     {%- set query_columns = get_column_schema_from_query(sql, sql_header) -%}
@@ -47,6 +61,7 @@
 {%- endmacro %}
 
 {% macro doris__create_view_as(relation, sql) -%}
+  {% do doris__validate_view_target(relation) %}
   {%- set sql_header = config.get('sql_header', none) -%}
   {%- set contract_config = config.get('contract') -%}
 

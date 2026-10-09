@@ -1052,6 +1052,73 @@ class TestContractProjection:
         ), f"an enforced contract should cast to the declared types: {sql}"
 
 
+class TestExternalViewTargets:
+    @pytest.mark.parametrize("database", ["iceberg_catalog", "other_external_catalog"])
+    @pytest.mark.parametrize("engine", [None, "iceberg", "OLAP"])
+    def test_create_view_rejects_external_catalog_before_contract_validation(
+        self, database, engine
+    ):
+        def unexpected_contract_validation(sql):
+            raise AssertionError("External Views must fail before validating their query")
+
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig({
+                    "engine": engine,
+                    "contract": SimpleNamespace(enforced=True),
+                    "sql_header": "set enable_insert_strict=true;",
+                }),
+                "get_assert_columns_equivalent": unexpected_contract_validation,
+            },
+        )
+
+        with pytest.raises(CapturedCompilerError, match="View in external Catalog"):
+            runner.render(
+                "doris__create_view_as",
+                FakeRelation(database=database, relation_type="view"),
+                "select 1 as id",
+            )
+        assert runner.statements == []
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    def test_internal_view_target_is_independent_of_table_engine(self, database, engine):
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={"config": FakeConfig({"engine": engine})},
+        )
+        relation = FakeRelation(database=database, relation_type="view")
+
+        sql = runner.sql("doris__create_view_as", relation, "select 1 as id")
+
+        assert f"create or replace view {relation}" in sql
+        assert "ENGINE" not in sql
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "OLAP"])
+    def test_materialization_rejects_external_catalog_before_hooks(self, engine):
+        def unexpected_hook(*args, **kwargs):
+            raise AssertionError("External View rejection must happen before hooks")
+
+        target = FakeRelation(database="iceberg_catalog", relation_type="view")
+        runner = MacroRunner(
+            "materializations/view/view.sql",
+            "materializations/view/create_view_as.sql",
+            context={
+                "this": target,
+                "adapter": FakeAdapter(),
+                "config": FakeConfig({"engine": engine}),
+                "load_cached_relation": lambda relation: relation.incorporate(type="table"),
+                "run_hooks": unexpected_hook,
+                "pre_hooks": [],
+            },
+        )
+
+        with pytest.raises(CapturedCompilerError, match="View in external Catalog"):
+            runner.render("materialization_view_doris")
+        assert runner.statements == []
+
+
 class TestViewContractValidation:
     def test_enforced_contract_runs_preflight_before_create(self):
         class Contract:

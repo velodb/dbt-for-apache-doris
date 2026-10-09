@@ -161,6 +161,127 @@ class TestDorisIcebergFirstCreate:
         assert relation.identifier + "__dbt_tmp" not in names
 
 
+class TestDorisIcebergViewRejection:
+    @pytest.fixture(scope="class")
+    def models(self):
+        names = [
+            f"iceberg_view_switch_{engine}_{mode}"
+            for engine in ("default", "iceberg", "olap")
+            for mode in ("ordinary", "refresh")
+        ]
+        switch_config = """
+{{ config(
+    materialized=var('view_materialization', 'table'),
+    engine=var('view_engine', none)
+) }}
+{% if var('view_materialization', 'table') == 'view' %}
+{{ config(
+    pre_hook='insert into ' ~ this ~ " (id, value) values (99, 'view hook ran')",
+    sql_header='set enable_insert_strict=true;'
+) }}
+{% endif %}
+"""
+        models = {name + ".sql": switch_config + DATA_SQL for name in names}
+        models["iceberg_view_initial.sql"] = """
+{{ config(
+    materialized='view',
+    pre_hook='select 42 as external_view_hook',
+    sql_header='set enable_insert_strict=true;'
+) }}
+""" + DATA_SQL
+        models["iceberg_view_source.sql"] = "{{ config(materialized='table') }}\n" + DATA_SQL
+        models["internal_iceberg_view.sql"] = """
+{{ config(materialized='view', database='internal') }}
+select * from {{ ref('iceberg_view_source') }}
+"""
+        return models
+
+    @staticmethod
+    def assert_no_view_side_effects(statements):
+        assert not any(
+            sql_fragment in sql
+            for sql in statements
+            for sql_fragment in (
+                "drop table", "drop view", "insert into",
+                "create or replace view", "set enable_insert_strict",
+                "external_view_hook",
+            )
+        )
+
+    @pytest.mark.parametrize("engine", ["default", "iceberg", "olap"])
+    @pytest.mark.parametrize("mode", ["ordinary", "refresh"])
+    def test_table_to_view_rejection_preserves_original_before_hooks(
+        self, project, engine, mode
+    ):
+        name = f"iceberg_view_switch_{engine}_{mode}"
+        run_dbt(["run", "--select", name])
+        relation = relation_from_name(project.adapter, name)
+        columns_before = project.run_sql(f"describe {relation}", fetch="all")
+        ddl_before = project.run_sql(f"show create table {relation}", fetch="one")
+        assert project.run_sql(
+            f"select id, value from {relation} order by id", fetch="all"
+        ) == EXPECTED_ROWS
+
+        variables = {"view_materialization": "view"}
+        if engine != "default":
+            variables["view_engine"] = "OLAP" if engine == "olap" else "iceberg"
+        args = ["run", "--select", name, "--vars", yaml.safe_dump(variables)]
+        if mode == "refresh":
+            args.append("--full-refresh")
+        for _ in range(2):
+            failure, statements = _run_and_capture_sql(name, list(args), expect_pass=False)
+            message = failure.results[0].message
+            assert "Compilation Error" in message
+            assert "View in external Catalog" in message
+            assert relation.database in message
+            self.assert_no_view_side_effects(statements)
+            assert project.run_sql(f"describe {relation}", fetch="all") == columns_before
+            assert project.run_sql(f"show create table {relation}", fetch="one") == ddl_before
+            assert project.run_sql(
+                f"select id, value from {relation} order by id", fetch="all"
+            ) == EXPECTED_ROWS
+
+        run_dbt(["run", "--select", name])
+        TestDorisIcebergReplacement.assert_target(project, name, EXPECTED_ROWS)
+
+    def test_initial_external_view_rejection_happens_before_hooks(self, project):
+        name = "iceberg_view_initial"
+        failure, statements = _run_and_capture_sql(
+            name, ["run", "--select", name], expect_pass=False
+        )
+        assert "View in external Catalog" in failure.results[0].message
+        self.assert_no_view_side_effects(statements)
+        relation = relation_from_name(project.adapter, name)
+        names = {
+            row[0] for row in project.run_sql(
+                f"show tables from `{relation.database}`.`{relation.schema}`", fetch="all"
+            )
+        }
+        assert relation.identifier not in names
+
+    def test_internal_view_can_still_query_iceberg_source(self, project):
+        source = relation_from_name(project.adapter, "iceberg_view_source")
+        internal_databases = {
+            row[0] for row in project.run_sql("show databases from internal", fetch="all")
+        }
+        assert source.schema not in internal_databases
+        view = source.incorporate(
+            path={"database": "internal", "identifier": "internal_iceberg_view"},
+            type="view",
+        )
+        try:
+            results = run_dbt(["run", "--select", "+internal_iceberg_view"])
+            assert len(results) == 2
+            assert project.run_sql(
+                f"select id, value from {view} order by id", fetch="all"
+            ) == EXPECTED_ROWS
+            assert "ICEBERG_EXTERNAL_TABLE" in project.run_sql(
+                f"show create table {source}", fetch="one"
+            )[1].upper()
+        finally:
+            project.run_sql(f"drop database if exists `internal`.`{source.schema}`")
+
+
 REPLACEMENT_SQL = """
 {% if var('fail_build', false) %}
 select missing_issue2_column from numbers("number" = "1")

@@ -194,8 +194,16 @@ validate; OLAP-only options are incompatible with Iceberg targets.
 
 First creation is covered for table models, column documentation, incremental
 models with a logical key, and seeds with Iceberg-compatible column types.
-Subsequent Iceberg merge still depends on operations that were rejected by the
-Doris 4.1.3 Iceberg connector in local verification.
+Subsequent Iceberg append/merge still fails the adapter's physical OLAP Key
+validation. Native MERGE INTO on a V2 Iceberg table was verified on Doris 4.1.3,
+but the adapter's merge strategy still uses OLAP Unique Key INSERT upserts.
+
+View targets must use the Internal Catalog. The adapter rejects external
+View targets before model hooks, sql_header or relation replacement. Changing
+an existing Iceberg table model to `materialized='view'` returns a clear error
+and preserves the original table. This check uses the target Catalog regardless
+of the configured engine. A View created in the Internal Catalog can still
+query Iceberg sources through their fully qualified names or configured refs.
 
 Table model reruns and incremental `--full-refresh` use a non-atomic replacement
 for external targets. The adapter renames the old target to dbt's backup name,
