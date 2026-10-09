@@ -886,6 +886,7 @@
     sql
 ) -%}
     {%- set build_mode = config.get('build_mode', 'immediate') or 'immediate' -%}
+    {% do doris__validate_view_target(relation, 'Materialized View') %}
     {%- set build_mode = build_mode | trim | lower -%}
     {%- if build_mode not in ['immediate', 'deferred'] -%}
         {{ exceptions.raise_compiler_error(
@@ -929,8 +930,9 @@
 {%- endmacro %}
 
 {% materialization materialized_view, adapter='doris' %}
-    {%- set existing_relation = load_cached_relation(this) -%}
     {%- set target_relation = this.incorporate(type='materialized_view') -%}
+    {% do doris__validate_view_target(target_relation, 'Materialized View') %}
+    {%- set existing_relation = load_cached_relation(this) -%}
     {%- set backup_relation_type = 'table' -%}
     {%- if existing_relation is not none and not existing_relation.is_view -%}
         {%- set backup_relation_type = existing_relation.type -%}

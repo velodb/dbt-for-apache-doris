@@ -55,6 +55,13 @@
       strategy,
       unique_key
   ) %}
+  {% set iceberg_microbatch = effective_strategy == 'microbatch' and doris__is_iceberg_catalog(target_relation) %}
+  {% if iceberg_microbatch and recovered_from_backup %}
+      {# Restore complete prior windows before applying this batch's replacement. #}
+      {% do adapter.rename_relation(recovery_backup_relation, target_relation) %}
+      {% set existing_relation = load_cached_relation(target_relation) %}
+      {% set recovered_from_backup = false %}
+  {% endif %}
   {# Resolve the public dbt strategy before hooks or writes, so a missing
      custom macro and an unsupported built-in fail early. #}
   {% set strategy_sql_macro_func = adapter.get_incremental_strategy_macro(
@@ -79,6 +86,7 @@
       effective_strategy == 'insert_overwrite'
       and not doris__is_olap_table(target_relation)
       and overwrite_partitions is not none
+      and not doris__is_iceberg_catalog(target_relation)
   ) %}
       {% do exceptions.raise_compiler_error(
           "External insert_overwrite does not support overwrite_partitions: "
@@ -157,12 +165,23 @@
   {# Validate configured keys against the query metadata before CTAS, INSERT,
      or target schema mutation. This is a zero-row metadata query. #}
   {% set source_columns = none %}
-  {% if effective_strategy == 'merge' %}
+  {% if effective_strategy == 'merge' or iceberg_microbatch %}
       {% set source_columns = get_column_schema_from_query(source_sql) %}
-      {% do doris__validate_source_unique_key_columns(
-          source_columns,
-          unique_key
-      ) %}
+      {% if effective_strategy == 'merge' %}
+          {% do doris__validate_source_unique_key_columns(source_columns, unique_key) %}
+      {% else %}
+          {% set names = source_columns | map(attribute='name') | map('lower') | list %}
+          {% if config.get('event_time') | lower not in names %}
+              {% do exceptions.raise_compiler_error("Iceberg microbatch SELECT must return its event_time column") %}
+          {% endif %}
+      {% endif %}
+  {% endif %}
+
+  {% if iceberg_microbatch %}
+      {% do run_query(doris__create_incremental_staging_table(temp_relation, source_sql)) %}
+      {% do to_drop.append(temp_relation) %}
+      {% do doris__validate_iceberg_microbatch_source(temp_relation) %}
+      {% set source_sql = 'select * from ' ~ temp_relation %}
   {% endif %}
 
   {% set build_sql = none %}
@@ -209,6 +228,7 @@
       {% set source_relation = none %}
       {% set temp_relation_exists = false %}
       {% set dest_columns = none %}
+      {% set source_keys_validated = false %}
 
       {# External Catalogs cannot create the logical schema view used by OLAP
          built-ins. Freeze their batch in a physical table; schema-changing
@@ -222,13 +242,12 @@
       ) %}
 
       {% if needs_physical_staging %}
-          {% do run_query(doris__create_incremental_staging_table(
-              temp_relation,
-              source_sql
-          )) %}
+          {% if not iceberg_microbatch %}
+              {% do run_query(doris__create_incremental_staging_table(temp_relation, source_sql)) %}
+          {% endif %}
           {% set source_relation = temp_relation %}
           {% set temp_relation_exists = true %}
-          {% do to_drop.append(source_relation) %}
+          {% if not iceberg_microbatch %}{% do to_drop.append(source_relation) %}{% endif %}
 
       {% else %}
           {# A logical view stores no batch data. It gives Doris/dbt exact
@@ -244,6 +263,14 @@
       {% endif %}
 
       {% if source_relation is not none %}
+          {% if effective_strategy == 'insert_overwrite' and overwrite_partitions is not none
+                and doris__is_iceberg_catalog(target_relation) %}
+              {% do doris__validate_iceberg_partition_source(source_relation, overwrite_partitions) %}
+          {% endif %}
+          {% if effective_strategy == 'merge' and doris__is_iceberg_catalog(target_relation) %}
+              {% do doris__validate_iceberg_merge_source(source_relation, unique_key) %}
+              {% set source_keys_validated = true %}
+          {% endif %}
           {% if (
               on_schema_change != 'ignore'
               or effective_strategy == 'merge'
@@ -252,7 +279,7 @@
                   source_relation,
                   existing_relation
               ) %}
-              {% if effective_strategy == 'merge' %}
+              {% if effective_strategy == 'merge' and not doris__is_iceberg_catalog(target_relation) %}
                   {% do doris__validate_unique_key_schema_changes(
                       schema_changes,
                       unique_key,
@@ -327,6 +354,7 @@
       {% if (
           effective_strategy == 'microbatch'
           and microbatch_partition is none
+          and not iceberg_microbatch
       ) %}
           {% do run_query(
               doris__add_microbatch_partition_sql(target_relation)
@@ -345,7 +373,8 @@
           'source_sql': source_sql,
           'temp_relation_exists': temp_relation_exists,
           'overwrite_partitions': overwrite_partitions,
-          'microbatch_partition': microbatch_partition
+          'microbatch_partition': microbatch_partition,
+          'source_keys_validated': source_keys_validated
       } %}
       {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
   {% endif %}
@@ -522,6 +551,20 @@
     ) %}
     {% set normalized_unique_key = doris__normalize_unique_key(unique_key) %}
     {% set sequence_column = doris__sequence_column_from_properties() %}
+    {% if doris__is_iceberg_catalog() %}
+        {% set engine = config.get('engine', none) %}
+        {% if engine is not none and engine | lower != 'iceberg' %}
+            {% do exceptions.raise_compiler_error(
+                "Iceberg incremental target cannot use engine='" ~ engine
+                ~ "'. Omit engine or configure engine='iceberg'."
+            ) %}
+        {% endif %}
+        {% if sequence_column is not none %}
+            {% do exceptions.raise_compiler_error(
+                "Iceberg incremental targets do not implement OLAP Sequence column properties."
+            ) %}
+        {% endif %}
+    {% endif %}
 
     {% if sequence_column is not none and (
         sequence_column is not string
@@ -608,7 +651,9 @@ Config 'overwrite_partitions' is only valid with incremental strategy
         {% do exceptions.raise_compiler_error(message) %}
     {% endif %}
 
-    {% if overwrite_partitions is not none %}
+    {% if overwrite_partitions is not none and doris__is_iceberg_catalog() %}
+        {% do doris__iceberg_partition_values(overwrite_partitions) %}
+    {% elif overwrite_partitions is not none %}
         {% if overwrite_partitions is string %}
             {% set partitions = [overwrite_partitions] %}
         {% else %}

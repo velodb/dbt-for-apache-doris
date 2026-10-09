@@ -18,8 +18,9 @@
 {#--
   dbt Core's default Snapshot materialization assumes that temporary relations
   are session-scoped and that snapshot_merge_sql is a single DML statement.
-  Doris uses physical CTAS staging and rebuilds the complete history before an
-  atomic REPLACE WITH TABLE, so it needs an explicit failure-safe lifecycle.
+  Doris uses physical CTAS staging and rebuilds complete history before
+  publication. OLAP uses atomic REPLACE WITH TABLE; Iceberg uses recovery
+  backup/rename operations, so both need an explicit helper lifecycle.
 --#}
 {% materialization snapshot, adapter='doris' %}
   {% set target_table = model.get('alias', model.get('name')) %}
@@ -39,6 +40,17 @@
   {% set staging_relation = make_temp_relation(target_relation) %}
   {% set upsert_relation = doris__snapshot_upsert_relation(target_relation) %}
   {% set initial_relation = doris__snapshot_initial_relation(target_relation) %}
+  {% set recovery_backup = load_cached_relation(make_backup_relation(target_relation, 'table')) %}
+  {% if recovery_backup is not none %}
+    {% if target_relation_exists %}
+      {% do exceptions.raise_compiler_error(
+          "Snapshot recovery backup " ~ recovery_backup ~ " already exists. "
+          ~ "Inspect the target and backup before retrying."
+      ) %}
+    {% endif %}
+    {% do adapter.rename_relation(recovery_backup, target_relation) %}
+    {% set target_relation_exists = true %}
+  {% endif %}
 
   {% if target_relation_exists and not target_relation.is_table %}
     {% do exceptions.relation_wrong_type(target_relation, 'table') %}

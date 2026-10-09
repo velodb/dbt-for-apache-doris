@@ -62,6 +62,44 @@ _TABLE_GRANT_PRIVILEGES = {
 }
 
 
+def _iceberg_partition_clause(create_table):
+    """Extract LIST expressions, ignoring quoted comments and identifiers."""
+    masked = list(create_table)
+    index = 0
+    quote = None
+    while index < len(create_table):
+        character = create_table[index]
+        if quote is None:
+            if character in "`'\"":
+                quote = character
+                masked[index] = " "
+        else:
+            masked[index] = " "
+            if character == "\\" and index + 1 < len(create_table):
+                index += 1
+                masked[index] = " "
+            elif character == quote:
+                if index + 1 < len(create_table) and create_table[index + 1] == quote:
+                    index += 1
+                    masked[index] = " "
+                else:
+                    quote = None
+        index += 1
+    sql = "".join(masked)
+    match = re.search(r"\bPARTITION\s+BY\s+LIST\s*\(", sql, re.IGNORECASE)
+    if match is None:
+        return ""
+    depth = 1
+    for index in range(match.end(), len(sql)):
+        if sql[index] == "(":
+            depth += 1
+        elif sql[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return create_table[match.start():index + 1] + " ()"
+    raise dbt.exceptions.DbtRuntimeError("Unterminated Iceberg partition clause in SHOW CREATE TABLE")
+
+
 def _table_grants_for_relation(table, relation):
     """SHOW GRANTS preserves Catalog names, unlike TABLE_PRIVILEGES ('def')."""
     catalog = relation.database or "internal"
@@ -229,6 +267,21 @@ class DorisAdapter(SQLAdapter):
             for privilege in sorted(_table_grants_for_relation(current, relation)):
                 grants.setdefault(privilege, []).append(grantee)
         return grants
+
+    @available
+    def get_catalog_type(self, catalog):
+        _, catalogs = self.execute("show catalogs", auto_begin=False, fetch=True)
+        if "CatalogName" not in catalogs.column_names or "Type" not in catalogs.column_names:
+            raise dbt.exceptions.DbtRuntimeError("SHOW CATALOGS cannot determine Catalog type")
+        for row in catalogs.rows:
+            if str(row["CatalogName"]) == catalog:
+                return str(row["Type"]).casefold()
+        raise dbt.exceptions.DbtRuntimeError(f"Catalog {catalog!r} is not visible to this dbt connection")
+
+    @available
+    def get_iceberg_partition_clause(self, relation):
+        _, table = self.execute(f"show create table {relation}", auto_begin=False, fetch=True)
+        return _iceberg_partition_clause(str(table.rows[0][1]))
 
     def expand_column_types(self, goal, current):
         """Widen string columns using Doris's case-insensitive name rules."""

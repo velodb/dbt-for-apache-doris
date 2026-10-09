@@ -43,8 +43,27 @@
     {{ return(not catalog or catalog | lower == 'internal') }}
 {%- endmacro %}
 
+{% macro doris__is_iceberg_catalog(relation=none) -%}
+    {% set database = relation.database if relation is not none else model.get('database', none) %}
+    {% if not database or database | lower == 'internal' %}
+        {{ return(false) }}
+    {% endif %}
+    {% if not execute %}
+        {{ return(config.get('engine', '') | lower == 'iceberg') }}
+    {% endif %}
+    {% set catalog = doris__catalog_name(database) %}
+    {# This cache belongs to this model context, not the parsed config or a
+       shared adapter. Resolve actual Catalog type, independently of engine. #}
+    {% set types = model.get('_doris_catalog_types', {}) %}
+    {% if catalog not in types %}
+        {% do types.update({catalog: adapter.get_catalog_type(catalog)}) %}
+        {% do model.update({'_doris_catalog_types': types}) %}
+    {% endif %}
+    {{ return(types[catalog] == 'iceberg') }}
+{%- endmacro %}
+
 {% macro doris__partition_by() -%}
-  {% if config.get('incremental_strategy', none) == 'microbatch' %}
+  {% if config.get('incremental_strategy', none) == 'microbatch' and not doris__is_iceberg_catalog() %}
     {{ return(doris__microbatch_partition_by_clause()) }}
   {% endif %}
   {% set cols = config.get('partition_by', validator=validation.any[list, basestring]) %}

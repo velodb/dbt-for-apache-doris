@@ -39,6 +39,7 @@ from .macro_harness import CapturedCompilerError, FakeConfig, FakeRelation, Macr
 MATERIALIZED_VIEW_MACROS = (
     "materializations/materialized_view/materialized_view.sql",
     "materializations/table/create_table_as.sql",
+    "materializations/view/create_view_as.sql",
 )
 
 

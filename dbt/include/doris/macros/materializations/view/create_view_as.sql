@@ -15,13 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-{% macro doris__validate_view_target(relation) -%}
+{% macro doris__validate_view_target(relation, kind='View') -%}
   {# CREATE VIEW only accepts the internal Catalog, regardless of engine.
      Materializations must validate this before hooks or dropping old objects. #}
   {% set catalog = relation.database or 'internal' %}
   {% if catalog | lower != 'internal' %}
     {% do exceptions.raise_compiler_error(
-        "Doris cannot create a View in external Catalog '" ~ catalog
+        "Doris cannot create a " ~ kind ~ " in external Catalog '" ~ catalog
         ~ "' for " ~ relation ~ ". Keep materialized='table' or use an "
         ~ "internal Catalog for View targets."
     ) %}

@@ -1412,6 +1412,8 @@ INCREMENTAL_MACROS = (
     "materializations/incremental/incremental.sql",
     "materializations/incremental/help.sql",
     "materializations/incremental/strategies.sql",
+    "adapters/relation.sql",
+    "adapters/metadata.sql",
 )
 
 

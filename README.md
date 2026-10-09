@@ -177,14 +177,9 @@ verified against Doris 4.1.3; an older Doris release may require the explicit
 engine. Explicit engines are preserved, including incompatible values that
 Doris must reject.
 
-The existing Catalog discovery workaround used by the functional regression
-is the following project setting, for a Catalog name that does not require
-identifier quoting:
-
-```yaml
-quoting:
-  database: false
-```
+Catalog discovery supports dbt's default identifier quoting. Incremental
+strategy selection uses the actual Catalog type reported by Doris, so omitting
+`engine` does not accidentally select OLAP Key validation for Iceberg.
 
 Iceberg CREATE paths do not automatically add Doris UNIQUE KEY,
 Merge-on-Write properties, or default OLAP distribution. A dbt `unique_key`
@@ -192,18 +187,22 @@ remains a logical matching key. Explicit physical options such as
 `duplicate_key`, `distributed_by`, and `properties` are preserved for Doris to
 validate; OLAP-only options are incompatible with Iceberg targets.
 
-First creation is covered for table models, column documentation, incremental
-models with a logical key, and seeds with Iceberg-compatible column types.
-Subsequent Iceberg append/merge still fails the adapter's physical OLAP Key
-validation. Native MERGE INTO on a V2 Iceberg table was verified on Doris 4.1.3,
-but the adapter's merge strategy still uses OLAP Unique Key INSERT upserts.
+Iceberg append uses INSERT INTO. Merge uses native MERGE INTO with null-safe
+matching on the logical `unique_key`, full-row updates and inserts. The frozen
+source is checked for duplicate keys before target schema changes or DML; a
+duplicate batch returns an error instead of choosing an arbitrary row. Merge
+requires a Doris version with native Iceberg MERGE and Iceberg format version 2
+or higher. This workflow was verified on Doris 4.1.3 with V2 tables. Doris
+[documents MERGE as experimental since 4.1.0](https://doris.apache.org/docs/4.x/lakehouse/catalogs/iceberg-catalog/#merge-into).
+OLAP merge retains its existing Unique Key INSERT upsert.
 
-View targets must use the Internal Catalog. The adapter rejects external
-View targets before model hooks, sql_header or relation replacement. Changing
+View and Async MV targets must use the Internal Catalog. The adapter rejects
+external targets before model hooks, sql_header or relation replacement. Changing
 an existing Iceberg table model to `materialized='view'` returns a clear error
 and preserves the original table. This check uses the target Catalog regardless
-of the configured engine. A View created in the Internal Catalog can still
-query Iceberg sources through their fully qualified names or configured refs.
+of the configured engine. Data tests with `store_failures_as='view'` also reject
+external targets before deleting existing audit results. Views and MVs created
+in the Internal Catalog can still query Iceberg sources.
 
 Table model reruns and incremental `--full-refresh` use a non-atomic replacement
 for external targets. The adapter renames the old target to dbt's backup name,
@@ -229,19 +228,59 @@ does not create the logical metadata View used by ordinary OLAP incrementals.
 This adds a staging write. The target is not renamed during ordinary overwrite.
 
 On an unpartitioned Iceberg target, the SELECT must provide the complete
-replacement result; an empty result clears the table. This scope was verified
-on Doris 4.1.3. Partitioned Iceberg overwrite scope is not covered by these
-tests, and Doris named-partition `overwrite_partitions` is rejected for external
-targets. A non-empty `unique_key` is still rejected for insert_overwrite to avoid
-silently interpreting an old upsert configuration as whole-table replacement.
+replacement result; an empty result clears the table. On a partitioned target,
+an unspecified scope uses native dynamic overwrite: partitions absent from
+the result remain unchanged, including when the result is empty.
+
+To replace a static Iceberg partition, configure a non-empty mapping rather
+than Doris's OLAP partition names:
+
+```sql
+{{ config(materialized='incremental', incremental_strategy='insert_overwrite',
+          partition_type='LIST', partition_by=['dt'],
+          overwrite_partitions={'dt': '2025-01-25'}) }}
+select id, value, dt from {{ ref('input') }} where dt = '2025-01-25'
+```
+
+The model SELECT must return the configured partition columns and keep every
+row within that scope. The adapter validates the frozen source, removes static
+columns from the INSERT projection and emits `PARTITION(dt='2025-01-25')`.
+An empty result clears the selected partition while preserving other
+partitions. String, finite numeric, boolean and NULL values can be configured;
+Doris validates their compatibility with the actual partition specification.
+A non-empty `unique_key` is still rejected for insert_overwrite.
 
 The four `on_schema_change` policies are exercised on Iceberg: `ignore`, `fail`,
 `append_new_columns`, and `sync_all_columns`. External column DDL executes
 through the connector without polling an OLAP Schema Change job; OLAP keeps
 its asynchronous job wait. Supported type changes depend on the connector and
 its actual ALTER result. Schema DDL and overwrite are separate statements and
-do not provide rollback for an entire dbt run. Incremental comment updates were
-not verified by these tests.
+do not provide rollback for an entire dbt run. Column documentation uses
+Catalog-qualified metadata and preserves the current type, nullability and
+default when an Iceberg comment changes. Grants and revokes retain the complete
+Catalog/Database/Table name; reconciliation checks exact object grants rather
+than mixing permissions from identically named tables in other Catalogs.
+Updating an existing Iceberg table-level comment remains unsupported by the
+tested Doris 4.1.3 ALTER paths.
+
+Iceberg microbatch freezes and validates each Core UTC event-time window,
+then uses one native MERGE to delete the old window and insert its replacement.
+An empty batch still clears that window; other windows remain unchanged.
+This works on unpartitioned tables and Iceberg LIST partition layouts such as
+`day(event_time)`. Configure `event_time`, `begin` and `batch_size`; use V2 or
+higher tables and a Doris version supporting Iceberg MERGE. Do not configure
+`unique_key`, named `overwrite_partitions`, OLAP Dynamic Partition properties,
+or `partition_by_init`. Core batch execution stays serial. Each window has one
+atomic data publication; a multi-window run and schema changes are not one
+transaction. Missing-target recovery restores the complete backup before
+applying the next window.
+
+Iceberg Snapshots build a helper with the target's current column definitions
+and LIST partition expressions instead of unsupported CREATE TABLE LIKE.
+Repeated runs preserve SCD history and support added columns without polling
+OLAP jobs. Publication uses the same non-atomic backup/rename path. A retry
+restores a missing target from its backup; an existing target plus backup is
+rejected for inspection rather than deleting the recovery copy.
 
 Iceberg seeds load every bound CSV batch into a private table before publishing
 any of it. Ordinary reload verifies the CSV schema and performs one native
@@ -294,10 +333,10 @@ any of the five demos.
 
 | Strategy | Doris target | Behavior and boundaries |
 | --- | --- | --- |
-| `append` | Duplicate Key table | Appends rows with `INSERT INTO` |
-| `merge` | MOW or MOR Unique Key table | Full-row `INSERT INTO` upsert using Doris Unique Key semantics; requires `unique_key` and does not emit SQL `MERGE INTO` |
-| `insert_overwrite` | Writable OLAP table; verified unpartitioned Iceberg target | Native `INSERT OVERWRITE`; OLAP also supports named or dynamic partitions; `unique_key` is rejected |
-| `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; hour/day/month/year windows; static or dynamic partitions; batches run serially |
+| `append` | OLAP Duplicate Key or writable Iceberg table | Appends rows with `INSERT INTO` |
+| `merge` | OLAP MOW/MOR Unique Key or Iceberg V2+ table | Requires `unique_key`; OLAP uses full-row INSERT upsert, Iceberg uses native MERGE with null-safe matching and duplicate-source validation |
+| `insert_overwrite` | Writable OLAP or Iceberg table | Native `INSERT OVERWRITE`; OLAP supports named/dynamic partitions, Iceberg supports dynamic scope or a static column/value mapping; `unique_key` is rejected |
+| `microbatch` | OLAP Duplicate Key with exact RANGE partitions, or Iceberg V2+ | OLAP overwrites one named partition; Iceberg atomically replaces one UTC window using MERGE, including empty windows; batches run serially |
 
 Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses
 `append`.
