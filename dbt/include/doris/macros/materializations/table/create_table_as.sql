@@ -262,7 +262,30 @@
     silently dropped every undeclared column from the target table. Column
     comments are applied separately by `persist_docs`.
 --#}
+{% macro doris__validate_model_constraints() -%}
+    {# Reject declarations before hooks/DDL/DML: CAST projections implement
+       name/type contracts and cannot enforce database constraints. #}
+    {% for constraint in model.get('constraints', []) %}
+        {% do exceptions.raise_compiler_error(
+            "dbt-doris does not enforce database constraints ('" ~ constraint.type
+            ~ "') on this model. Remove constraints or use data_tests; "
+            ~ "model contracts still validate column names and types."
+        ) %}
+    {% endfor %}
+    {% for name, column in model.get('columns', {}).items() %}
+        {% for constraint in column.get('constraints', []) %}
+            {% do exceptions.raise_compiler_error(
+                "dbt-doris does not enforce database constraints ('" ~ constraint.type
+                ~ "') on column '" ~ name ~ "'. Remove constraints or use data_tests; "
+                ~ "model contracts still validate column names and types."
+            ) %}
+        {% endfor %}
+    {% endfor %}
+{%- endmacro %}
+
+
 {% macro doris__table_colume_type(sql) -%}
+    {% do doris__validate_model_constraints() %}
     {% set contract_config = config.get('contract') %}
     {% if contract_config and contract_config.enforced %}
         {{ get_assert_columns_equivalent(sql) }}

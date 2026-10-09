@@ -1309,6 +1309,7 @@ def test_view_materialization_drops_an_existing_mv_through_the_adapter():
         "materializations/view/view.sql",
         "materializations/view/create_view_as.sql",
         "adapters/relation.sql",
+        "materializations/table/create_table_as.sql",
         context={
             "adapter": Adapter(),
             "apply_grants": lambda *args, **kwargs: "",

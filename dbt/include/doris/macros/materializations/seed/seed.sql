@@ -93,13 +93,20 @@
                 ~ "Run dbt seed --full-refresh --select " ~ model.name ~ "."
             ) %}
         {% endif %}
-        {% set publish_sql = doris__get_incremental_insert_overwrite_sql({
+        {% set publish_args = {
             'target_relation': target_relation,
             'temp_relation': stage_relation,
             'dest_columns': schema_changes['source_columns'],
             'temp_relation_exists': true,
             'overwrite_partitions': none
-        }) %}
+        } %}
+        {% if doris__is_iceberg_catalog(target_relation) and adapter.get_iceberg_partition_clause(target_relation) %}
+            {# A Seed reload replaces the complete CSV, including partitions
+               absent from it. Native dynamic overwrite cannot do that. #}
+            {% set publish_sql = doris__get_iceberg_replace_sql(publish_args) %}
+        {% else %}
+            {% set publish_sql = doris__get_incremental_insert_overwrite_sql(publish_args) %}
+        {% endif %}
         {# Execute even for zero rows: an empty CSV must replace old data. #}
         {% call statement('seed_overwrite') %}
             {{ publish_sql }}

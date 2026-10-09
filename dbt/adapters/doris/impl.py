@@ -37,6 +37,7 @@ from typing import (
 import agate
 import dbt.exceptions
 from dbt.adapters.base import available
+from dbt.adapters.base.impl import ConstraintSupport
 from dbt.adapters.base.relation import BaseRelation
 from dbt.adapters.contracts.connection import AdapterResponse
 from dbt.adapters.doris.column import DorisColumn
@@ -46,6 +47,7 @@ from dbt.adapters.protocol import AdapterConfig
 from dbt.adapters.contracts.relation import RelationType
 from dbt.adapters.sql.impl import LIST_RELATIONS_MACRO_NAME, LIST_SCHEMAS_MACRO_NAME
 from dbt_common.clients.agate_helper import table_from_rows
+from dbt_common.contracts.constraints import ConstraintType
 from dbt.adapters.doris.doris_column_item import DorisColumnItem
 
 
@@ -236,6 +238,9 @@ class DorisAdapter(SQLAdapter):
     Relation = DorisRelation
     AdapterSpecificConfigs = DorisConfig
     Column = DorisColumn
+    # The adapter implements column-name/type contracts, not database constraint
+    # DDL. Inherited enforced flags otherwise promise protection we do not emit.
+    CONSTRAINT_SUPPORT = {kind: ConstraintSupport.NOT_SUPPORTED for kind in ConstraintType}
 
     def valid_incremental_strategies(self):
         """Return the built-in incremental strategies implemented by dbt-doris."""
@@ -599,6 +604,12 @@ class DorisAdapter(SQLAdapter):
     def render_raw_columns_constraints(cls, raw_columns: Dict[str, Dict[str, Any]]) -> List:
         rendered_column_constraints = []
         for v in raw_columns.values():
+            if v.get('constraints'):
+                raise dbt.exceptions.DbtRuntimeError(
+                    "dbt-doris does not enforce database constraints on column "
+                    f"{v['name']!r}. Remove constraints or use data_tests; "
+                    "model contracts still validate column names and types."
+                )
             # DorisColumnItem quotes identifiers when it renders SQL. Passing an
             # already quoted name for `quote: true` produced invalid double
             # backticks such as ``order`` in contracted model projections.

@@ -16,6 +16,7 @@
 -- under the License.
 
 {% materialization incremental, adapter='doris' %}
+  {% do doris__validate_model_constraints() %}
   {% set target_relation = this.incorporate(type='table') %}
   {% set existing_relation = load_cached_relation(this) %}
   {% set temp_relation = make_temp_relation(target_relation) %}

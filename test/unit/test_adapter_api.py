@@ -25,10 +25,12 @@ import inspect
 import pytest
 
 from dbt.adapters.capability import Capability
+from dbt.adapters.base.impl import ConstraintSupport
 from dbt.adapters.doris.impl import DorisAdapter
 from dbt.adapters.doris.relation import DorisRelation
 from dbt_common.clients.agate_helper import table_from_rows
 from dbt_common.exceptions import DbtRuntimeError
+from dbt_common.contracts.constraints import ConstraintType
 
 
 def test_class_level_adapter_methods_remain_classmethods():
@@ -72,6 +74,19 @@ def test_quoted_contract_column_renders_without_an_adapter_instance():
     assert columns[0].get_table_column_constraint() == (
         "cast(`order` as bigint) as `order`"
     )
+
+
+@pytest.mark.parametrize("constraint", list(ConstraintType))
+def test_database_constraints_are_not_advertised_as_enforced(constraint):
+    assert DorisAdapter.CONSTRAINT_SUPPORT.get(constraint) == ConstraintSupport.NOT_SUPPORTED
+
+
+@pytest.mark.parametrize("kind", ["not_null", "primary_key", "foreign_key"])
+def test_direct_constraint_renderer_does_not_silently_discard_constraints(kind):
+    with pytest.raises(DbtRuntimeError, match="does not enforce database constraints"):
+        DorisAdapter.render_raw_columns_constraints({"id": {
+            "name": "id", "data_type": "int", "constraints": [{"type": kind}],
+        }})
 
 
 def test_catalog_matches_internal_and_external_namespaces():

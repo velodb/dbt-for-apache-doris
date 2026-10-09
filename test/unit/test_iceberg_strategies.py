@@ -93,3 +93,30 @@ def test_catalog_type_lookup_uses_visible_catalog_name():
     adapter = object.__new__(DorisAdapter)
     adapter.execute = Mock(return_value=(None, table_from_rows([["lake", "iceberg"]], ["CatalogName", "Type"])))
     assert adapter.get_catalog_type("lake") == "iceberg"
+
+
+def test_null_partition_replacement_inserts_partition_columns_and_uses_null_safe_scope():
+    columns = [SimpleNamespace(name=name, data_type="int" if name == "id" else "string")
+               for name in ["id", "dt", "region", "value"]]
+    args = {"target_relation": FakeRelation(database="lake"), "temp_relation": FakeRelation(database="lake"),
+            "dest_columns": columns, "overwrite_partitions": {"dt": None, "region": "A"}}
+    sql = runner().sql("doris__get_incremental_insert_overwrite_sql", args)
+    assert sql.startswith("merge into")
+    assert "DBT_INTERNAL_DEST.`dt` <=> null" in sql
+    assert "DBT_INTERNAL_DEST.`region` <=> 'A'" in sql
+    assert "insert (`id`, `dt`, `region`, `value`)" in sql
+    assert "partition (" not in sql
+
+
+def test_whole_replacement_has_null_and_non_null_delete_buckets_with_collision_free_marker():
+    columns = [SimpleNamespace(name=name, data_type="int")
+               for name in ["id", "DBT_INTERNAL_BATCH_OPERATION_0"]]
+    args = {"target_relation": FakeRelation(database="lake"), "temp_relation": FakeRelation(database="lake"),
+            "dest_columns": columns}
+    sql = runner().sql("doris__get_iceberg_replace_sql", args)
+    assert "DBT_INTERNAL_DEST.`id` is not null" in sql
+    assert "else 'N'" in sql
+    assert "'N' as `DBT_INTERNAL_BATCH_OPERATION_1`" in sql
+    assert "'D' as `DBT_INTERNAL_BATCH_OPERATION_1`" in sql
+    assert "when matched then delete" in sql
+    assert "when not matched and DBT_INTERNAL_SOURCE.`DBT_INTERNAL_BATCH_OPERATION_1`='I'" in sql

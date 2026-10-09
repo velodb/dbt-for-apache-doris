@@ -46,7 +46,7 @@ platform boundaries are described alongside each capability.
 | Sources and freshness | ✅ Supported | `loaded_at_field`, filter, and `loaded_at_query`; sources may use Internal or External Catalog relations |
 | Data tests | ✅ Supported | Singular, generic, ephemeral, and `store_failures` paths |
 | dbt Unit tests | ✅ Supported | Inline-row and CSV fixtures, case-insensitive columns, invalid-input validation, quoted reserved words, Doris-adapted data-type fixtures, and non-truncating VARCHAR fixtures |
-| Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; not database PK/NOT NULL constraints |
+| Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; database constraints such as NOT NULL/PK are rejected before hooks and target writes |
 | Persisted docs | ✅ Supported | Relation and column comments for Table, View, Incremental, Snapshot, Seed, and Async MV; updating View comments or comment text containing both quote delimiters may require recreation/full refresh |
 | Grants | ✅ Supported | Reconciles supported Doris table privileges for `user` and `user@host` principals on Table, View, Incremental, Seed, Snapshot, and Async MV; role principals are not reconciled |
 | Hooks | ✅ Supported | Pre-hooks and post-hooks across adapter materializations; Doris does not provide transactional rollback for hook side effects |
@@ -223,7 +223,7 @@ this behavior was verified with an Iceberg REST Catalog on Doris 4.1.3.
 Ordinary Iceberg incremental runs can use
 `incremental_strategy='insert_overwrite'` with no `unique_key`. The adapter
 freezes the model result in a physical Iceberg staging table, then executes
-one native INSERT OVERWRITE against the target and cleans up the stage. It
+one native publication against the target and cleans up the stage. It
 does not create the logical metadata View used by ordinary OLAP incrementals.
 This adds a staging write. The target is not renamed during ordinary overwrite.
 
@@ -249,6 +249,16 @@ An empty result clears the selected partition while preserving other
 partitions. String, finite numeric, boolean and NULL values can be configured;
 Doris validates their compatibility with the actual partition specification.
 A non-empty `unique_key` is still rejected for insert_overwrite.
+
+When the mapping contains NULL, the adapter avoids Doris 4.1.3's incorrect
+static `PARTITION(dt=NULL)` path. One native MERGE replaces all rows matching
+the complete logical mapping with null-safe comparisons, including when the
+batch is empty. Other rows remain unchanged. For example,
+`{'dt': none, 'region': 'A'}` replaces only NULL-dt rows in region A;
+`{'dt': none}` replaces the entire NULL-dt scope across other partition fields.
+The SELECT must supply the complete replacement for that scope. This path
+requires native Iceberg MERGE and V2+; V1 fails before changing target data.
+Mappings without NULL retain native static/hybrid INSERT OVERWRITE semantics.
 
 The four `on_schema_change` policies are exercised on Iceberg: `ignore`, `fail`,
 `append_new_columns`, and `sync_all_columns`. External column DDL executes
@@ -284,8 +294,15 @@ rejected for inspection rather than deleting the recovery copy.
 
 Iceberg seeds load every bound CSV batch into a private table before publishing
 any of it. Ordinary reload verifies the CSV schema and performs one native
-INSERT OVERWRITE, avoiding unsupported TRUNCATE and repeated batch overwrites.
-A header-only CSV clears an existing unpartitioned target. Ordinary reload
+publication, avoiding unsupported TRUNCATE and repeated batch overwrites.
+An unpartitioned target uses INSERT OVERWRITE. A partitioned target uses one
+native MERGE to replace the complete CSV, deleting old partitions absent from
+it and clearing every partition for a header-only CSV. It retains the target's
+schema, partition expressions, location and table identity. Partition detection
+uses the existing table, so this works even when project configuration omits
+its partition layout. This partitioned reload requires native Iceberg MERGE and
+V2+; for V1 use `dbt seed --full-refresh`, whose rename publication is non-atomic.
+Ordinary reload
 defaults to the target's existing field types, including when new samples are
 all NULL or numeric text. Explicit column types take precedence. A schema
 change requires `dbt seed --full-refresh`; first creation and full refresh infer
@@ -297,13 +314,22 @@ database loading error leaves the existing target data intact for retry; the
 adapter retains Doris's configured casting behavior. If a missing target has a
 backup, Seed can restore it before retrying. When both target and backup exist,
 the adapter refuses to remove the recovery copy automatically. These paths
-were verified for unpartitioned Iceberg on Doris 4.1.3. Full-refresh publication
+were verified on Doris 4.1.3, including ordinary V2 reload of identity and
+transformed partition layouts and V1 full refresh. Full-refresh publication
 remains non-atomic, and post-publication errors do not roll data back.
 
 Internal OLAP seeds delegate to Core's existing materialization: ordinary
 reload remains TRUNCATE plus INSERT, and full refresh remains DROP plus CREATE
 and INSERT. CSV batching, bindings, hooks, grants, documentation and result row
 counts retain Core's behavior.
+
+Model contracts validate column names and types. The adapter does not emit
+database constraint DDL and declares those capabilities unsupported. A model
+or column `constraints` declaration returns a specific error before Table,
+Incremental, View or MV hooks, sql_header, cleanup or publication. This applies
+to both Internal and External Catalog targets. `data_tests` such as `not_null`
+remain supported; they check results after writing and do not provide a
+database-enforced constraint.
 
 The opt-in functional regression uses the configured Doris test endpoint and
 an existing writable Catalog:
