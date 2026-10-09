@@ -15,7 +15,13 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
-{% macro doris__create_csv_table(model, agate_table) -%}
+{% macro doris__create_csv_table(
+    model,
+    agate_table,
+    relation=none,
+    inferred_column_types=none
+) -%}
+    {% set relation = this if relation is none else relation %}
     {% set column_override = model['config'].get('column_types', {}) %}
     {% set quote_seed_column = model['config'].get('quote_columns', None) %}
     {% set documented_columns = model.get('columns', {}) %}
@@ -27,9 +33,13 @@
     #}
 
     {% set sql %}
-    create table {{ this.render() }} (
+    create table {{ relation.render() }} (
         {% for col_name in agate_table.column_names %}
-            {% set inferred_type = adapter.convert_type(agate_table, loop.index0) %}
+            {% set inferred_type = (
+                inferred_column_types[col_name | lower]
+                if inferred_column_types and col_name | lower in inferred_column_types
+                else adapter.convert_type(agate_table, loop.index0)
+            ) %}
             {% set col_type = column_override.get(col_name, inferred_type) %}
             {% set column_name = (col_name | string) %}
             {{ adapter.quote_seed_column(column_name, quote_seed_column) }} {{ col_type }}
@@ -51,7 +61,7 @@
     {{ doris__duplicate_key() }}
     {{ doris__table_comment() }}
     {{ doris__partition_by() }}
-    {{ doris__distributed_by(agate_table.column_names[0:1]) }}
+    {{ doris__distributed_by(agate_table.column_names[0:1], relation=relation) }}
     {{ doris__properties() }}
     {% endset %}
 
@@ -66,3 +76,35 @@
     {{ return(sql) }}
 
 {%- endmacro %}
+
+
+{% macro doris__load_csv_rows_into_relation(model, agate_table, relation) %}
+    {# Keep Core's batching and parameter binding, but load a complete private
+       table before publishing any of its data. A header-only CSV has no INSERT. #}
+    {% if agate_table.rows | length == 0 %}
+        {{ return('') }}
+    {% endif %}
+    {% set batch_size = get_batch_size() %}
+    {% set cols_sql = get_seed_column_quoted_csv(model, agate_table.column_names) %}
+    {% set statements = [] %}
+
+    {% for chunk in agate_table.rows | batch(batch_size) %}
+        {% set bindings = [] %}
+        {% for row in chunk %}
+            {% do bindings.extend(row) %}
+        {% endfor %}
+        {% set sql %}
+            insert into {{ relation.render() }} ({{ cols_sql }}) values
+            {% for row in chunk -%}
+                ({%- for column in agate_table.column_names -%}
+                    {{ get_binding_char() }}{% if not loop.last %},{% endif %}
+                {%- endfor -%}){% if not loop.last %},{% endif %}
+            {%- endfor %}
+        {% endset %}
+        {% do adapter.add_query(sql, bindings=bindings, abridge_sql_log=True) %}
+        {% if loop.first %}
+            {% do statements.append(sql) %}
+        {% endif %}
+    {% endfor %}
+    {{ return(statements[0]) }}
+{% endmacro %}

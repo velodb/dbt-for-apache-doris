@@ -337,7 +337,11 @@
   {% do doris__drop_relation(upsert) %}
 
   {% call statement('create_snapshot_upsert_relation') %}
+    {% if doris__is_iceberg_catalog(target) %}
+      {{ doris__create_iceberg_snapshot_clone(target, upsert) }}
+    {% else %}
     create table {{ upsert }} like {{ target }}
+    {% endif %}
   {% endcall %}
 
   {% set target_columns = adapter.get_columns_in_relation(target) %}
@@ -413,8 +417,7 @@
 
   {% do doris__validate_snapshot_upsert(upsert) %}
 
-  {# swap=false atomically installs the complete helper table under the target
-     name. If this statement fails, Doris leaves the old target untouched. #}
+  {# OLAP publishes atomically; Iceberg uses the shared recovery backup path. #}
   {% do exchange_relation(target, upsert, true) %}
 
   {% do return('select 1') %}
@@ -429,12 +432,42 @@
 {% macro doris__create_columns(relation, columns) -%}
   {% if columns %}
     {% for column in columns %}
-      {% set previous_job_id = adapter.get_latest_schema_change_job_id(relation) %}
+      {% if doris__is_olap_table(relation) %}
+        {% set previous_job_id = adapter.get_latest_schema_change_job_id(relation) %}
+      {% endif %}
       {% call statement('add_snapshot_column_' ~ loop.index) %}
         alter table {{ relation }} add column
           {{ adapter.quote(column.name) }} {{ column.expanded_data_type }}
       {% endcall %}
-      {% do adapter.wait_for_schema_change(relation, previous_job_id) %}
+      {% if doris__is_olap_table(relation) %}
+        {% do adapter.wait_for_schema_change(relation, previous_job_id) %}
+      {% endif %}
     {% endfor %}
   {% endif %}
+{%- endmacro %}
+
+{% macro doris__create_iceberg_snapshot_clone(target, upsert) -%}
+  {% set attributes = run_query(
+      'select column_name,column_type,is_nullable,column_default,column_comment from '
+      ~ doris__information_schema_name(target.database)
+      ~ ".columns where table_schema='" ~ (target.schema | replace("'", "''"))
+      ~ "' and table_name='" ~ (target.identifier | replace("'", "''"))
+      ~ "' order by ordinal_position"
+  ) %}
+  create table {{ upsert }} (
+    {% for column in attributes %}
+      {{ adapter.quote(column[0]) }} {{ column[1] }}
+      {{ 'NOT NULL' if column[2] | upper == 'NO' else 'NULL' }}
+      {% if column[3] is not none %}
+        DEFAULT '{{ column[3] | replace("\\", "\\\\") | replace("'", "\\'") }}'
+      {% endif %}
+      {% if column[4] %}
+        COMMENT '{{ column[4] | replace("\\", "\\\\") | replace("'", "\\'") }}'
+      {% endif %}
+      {% if not loop.last %},{% endif %}
+    {% endfor %}
+  )
+  {{ doris__engine() }}
+  {{ adapter.get_iceberg_partition_clause(target) }}
+  {{ doris__properties() }}
 {%- endmacro %}

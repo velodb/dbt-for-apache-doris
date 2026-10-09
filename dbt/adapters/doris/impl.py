@@ -37,6 +37,7 @@ from typing import (
 import agate
 import dbt.exceptions
 from dbt.adapters.base import available
+from dbt.adapters.base.impl import ConstraintSupport
 from dbt.adapters.base.relation import BaseRelation
 from dbt.adapters.contracts.connection import AdapterResponse
 from dbt.adapters.doris.column import DorisColumn
@@ -46,6 +47,7 @@ from dbt.adapters.protocol import AdapterConfig
 from dbt.adapters.contracts.relation import RelationType
 from dbt.adapters.sql.impl import LIST_RELATIONS_MACRO_NAME, LIST_SCHEMAS_MACRO_NAME
 from dbt_common.clients.agate_helper import table_from_rows
+from dbt_common.contracts.constraints import ConstraintType
 from dbt.adapters.doris.doris_column_item import DorisColumnItem
 
 
@@ -55,6 +57,75 @@ _DORIS_VERSION = re.compile(
 _DORIS_DEVELOPMENT_VERSION = re.compile(
     r"^doris-0\.0\.0-[0-9a-f]{7,64}$"
 )
+
+_TABLE_GRANT_PRIVILEGES = {
+    "select_priv": "select", "load_priv": "insert", "alter_priv": "alter",
+    "create_priv": "create", "drop_priv": "drop", "show_view_priv": "show_view",
+}
+
+
+def _iceberg_partition_clause(create_table):
+    """Extract LIST expressions, ignoring quoted comments and identifiers."""
+    masked = list(create_table)
+    index = 0
+    quote = None
+    while index < len(create_table):
+        character = create_table[index]
+        if quote is None:
+            if character in "`'\"":
+                quote = character
+                masked[index] = " "
+        else:
+            masked[index] = " "
+            if character == "\\" and index + 1 < len(create_table):
+                index += 1
+                masked[index] = " "
+            elif character == quote:
+                if index + 1 < len(create_table) and create_table[index + 1] == quote:
+                    index += 1
+                    masked[index] = " "
+                else:
+                    quote = None
+        index += 1
+    sql = "".join(masked)
+    match = re.search(r"\bPARTITION\s+BY\s+LIST\s*\(", sql, re.IGNORECASE)
+    if match is None:
+        return ""
+    depth = 1
+    for index in range(match.end(), len(sql)):
+        if sql[index] == "(":
+            depth += 1
+        elif sql[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return create_table[match.start():index + 1] + " ()"
+    raise dbt.exceptions.DbtRuntimeError("Unterminated Iceberg partition clause in SHOW CREATE TABLE")
+
+
+def _table_grants_for_relation(table, relation):
+    """SHOW GRANTS preserves Catalog names, unlike TABLE_PRIVILEGES ('def')."""
+    catalog = relation.database or "internal"
+    if catalog.casefold() == "internal":
+        catalog = "internal"
+    object_name = f"{catalog}.{relation.schema}.{relation.identifier}"
+    if "TablePrivs" not in table.column_names:
+        raise dbt.exceptions.DbtRuntimeError(
+            "SHOW GRANTS did not return TablePrivs; cannot reconcile " + object_name
+        )
+    result = set()
+    for row in table.rows:
+        for entry in str(row["TablePrivs"] or "").split(";"):
+            name, separator, privileges = entry.strip().rpartition(": ")
+            if separator and name == object_name:
+                for privilege in privileges.split(","):
+                    normalized = privilege.strip().casefold()
+                    if normalized not in _TABLE_GRANT_PRIVILEGES:
+                        raise dbt.exceptions.DbtRuntimeError(
+                            f"Cannot reconcile unsupported table privilege {privilege!r} "
+                            f"on {object_name}"
+                        )
+                    result.add(_TABLE_GRANT_PRIVILEGES[normalized])
+    return result
 
 
 @dataclass
@@ -167,6 +238,9 @@ class DorisAdapter(SQLAdapter):
     Relation = DorisRelation
     AdapterSpecificConfigs = DorisConfig
     Column = DorisColumn
+    # The adapter implements column-name/type contracts, not database constraint
+    # DDL. Inherited enforced flags otherwise promise protection we do not emit.
+    CONSTRAINT_SUPPORT = {kind: ConstraintSupport.NOT_SUPPORTED for kind in ConstraintType}
 
     def valid_incremental_strategies(self):
         """Return the built-in incremental strategies implemented by dbt-doris."""
@@ -185,6 +259,34 @@ class DorisAdapter(SQLAdapter):
                 "Table first."
             )
         return super().rename_relation(from_relation, to_relation)
+
+    @available
+    def get_relation_grants(self, relation):
+        """Resolve exact Catalog grants for candidate table principals."""
+        sql = self.execute_macro("doris__get_grant_candidates_sql", kwargs={"relation": relation})
+        _, candidates = self.execute(sql, auto_begin=False, fetch=True)
+        grants = {}
+        for grantee in sorted({str(row[0]) for row in candidates.rows}):
+            identity = self.execute_macro("doris__grant_user_identity", kwargs={"grantee": grantee})
+            _, current = self.execute("show grants for " + identity, auto_begin=False, fetch=True)
+            for privilege in sorted(_table_grants_for_relation(current, relation)):
+                grants.setdefault(privilege, []).append(grantee)
+        return grants
+
+    @available
+    def get_catalog_type(self, catalog):
+        _, catalogs = self.execute("show catalogs", auto_begin=False, fetch=True)
+        if "CatalogName" not in catalogs.column_names or "Type" not in catalogs.column_names:
+            raise dbt.exceptions.DbtRuntimeError("SHOW CATALOGS cannot determine Catalog type")
+        for row in catalogs.rows:
+            if str(row["CatalogName"]) == catalog:
+                return str(row["Type"]).casefold()
+        raise dbt.exceptions.DbtRuntimeError(f"Catalog {catalog!r} is not visible to this dbt connection")
+
+    @available
+    def get_iceberg_partition_clause(self, relation):
+        _, table = self.execute(f"show create table {relation}", auto_begin=False, fetch=True)
+        return _iceberg_partition_clause(str(table.rows[0][1]))
 
     def expand_column_types(self, goal, current):
         """Widen string columns using Doris's case-insensitive name rules."""
@@ -502,6 +604,12 @@ class DorisAdapter(SQLAdapter):
     def render_raw_columns_constraints(cls, raw_columns: Dict[str, Dict[str, Any]]) -> List:
         rendered_column_constraints = []
         for v in raw_columns.values():
+            if v.get('constraints'):
+                raise dbt.exceptions.DbtRuntimeError(
+                    "dbt-doris does not enforce database constraints on column "
+                    f"{v['name']!r}. Remove constraints or use data_tests; "
+                    "model contracts still validate column names and types."
+                )
             # DorisColumnItem quotes identifiers when it renders SQL. Passing an
             # already quoted name for `quote: true` produced invalid double
             # backticks such as ``order`` in contracted model projections.
