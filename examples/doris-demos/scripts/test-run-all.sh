@@ -48,7 +48,7 @@ cat <<EOF
 Core:
   - installed: ${MOCK_DBT_CORE:-1.12.2}
 Plugins:
-  - doris: ${MOCK_DORIS_ADAPTER:-1.1.0} - Up to date!
+  - doris: ${MOCK_DORIS_ADAPTER:-1.1.1} - Up to date!
 EOF
 DBT
   cat >"$fixture_root/bin/mysql" <<'MYSQL'
@@ -185,7 +185,7 @@ set -e
 fixture=$test_root/adapter-version
 make_fixture "$fixture"
 set +e
-MOCK_DORIS_ADAPTER=1.1.0.post1 run_fixture "$fixture" --dry-run >/dev/null 2>&1
+MOCK_DORIS_ADAPTER=1.1.1.post1 run_fixture "$fixture" --dry-run >/dev/null 2>&1
 status=$?
 set -e
 [[ $status == 1 ]] || fail "inexact adapter version was accepted"

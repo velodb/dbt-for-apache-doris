@@ -112,7 +112,7 @@ Before starting a Notebook, prepare:
 - A Doris user that can create, drop, and modify the dedicated `dbt_demo_*`
   databases and their tables, views, materialized views, and snapshots.
 
-The setup script installs dbt Core 1.12.2, `dbt-for-apache-doris` 1.1.0, and
+The setup script installs dbt Core 1.12.2, `dbt-for-apache-doris` 1.1.1, and
 JupyterLab. The advertising Demo also runs `dbt deps` to install `dbt_utils`,
 so the first setup needs access to the configured Python and package sources.
 
@@ -205,7 +205,7 @@ INSTALL_JUPYTER=1 examples/doris-demos/scripts/prepare-python-env.sh
 ```
 
 The setup script creates an isolated environment with Python 3.12.13, dbt Core
-1.12.2, and `dbt-for-apache-doris` 1.1.0. Re-running it reuses a matching
+1.12.2, and `dbt-for-apache-doris` 1.1.1. Re-running it reuses a matching
 environment. The Notebook and command-line runners use the executables in
 this environment automatically. Set `DBT_BIN` only when using a custom dbt
 installation.

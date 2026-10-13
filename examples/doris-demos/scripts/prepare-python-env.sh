@@ -8,7 +8,7 @@ uv_bin=${UV_BIN:-uv}
 venv_dir=${DBT_DEMO_VENV:-$demo_dir/.venv}
 python_version=${DBT_DEMO_PYTHON_VERSION:-3.12.13}
 dbt_core_version=${DBT_CORE_VERSION:-1.12.2}
-adapter_requirement=${DBT_DORIS_PACKAGE:-dbt-for-apache-doris==1.1.0}
+adapter_requirement=${DBT_DORIS_PACKAGE:-dbt-for-apache-doris==1.1.1}
 
 if [[ ! $python_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "DBT_DEMO_PYTHON_VERSION must be an exact X.Y.Z version: $python_version" >&2

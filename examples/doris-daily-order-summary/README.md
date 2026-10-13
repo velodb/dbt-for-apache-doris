@@ -60,7 +60,7 @@ data, Doris DDL, and latest MV task status.
 ## Run All Five Release Demos
 
 From the repository root, run these commands to create an isolated environment
-with Python 3.12.13, dbt Core 1.12.2, and dbt-for-apache-doris 1.1.0, then run
+with Python 3.12.13, dbt Core 1.12.2, and dbt-for-apache-doris 1.1.1, then run
 the five Demos: daily summary, geographic analysis, advertising consolidation,
 late-arriving order incremental processing, and Snapshot.
 
