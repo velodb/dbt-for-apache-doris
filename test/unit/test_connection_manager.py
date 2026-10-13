@@ -150,6 +150,16 @@ def test_session_variables_are_included_in_connection_keys():
     assert "session_variables" in credentials._connection_keys()
 
 
+@pytest.mark.parametrize("session_variables", [None, {"time_zone": "UTC"}])
+def test_session_variables_preserve_catalog_database_namespace(session_variables):
+    credentials = DorisCredentials(
+        database="iceberg_catalog", schema="analytics", session_variables=session_variables,
+    )
+    assert credentials.database == "iceberg_catalog"
+    assert credentials.schema == "analytics"
+    assert credentials.session_variables == session_variables
+
+
 def test_session_variables_validate_names_and_values():
     with pytest.raises(DbtValidationError, match="Invalid Doris session variable name"):
         DorisCredentials(schema="dbt", session_variables={"time-zone": "UTC"})

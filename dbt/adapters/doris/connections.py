@@ -47,13 +47,8 @@ class DorisCredentials(Credentials):
     session_variables: Optional[Dict[str, Union[str, int, bool]]] = None
 
     def __post_init__(self):
-        if self.database is not None and self.database != self.schema:
-            raise exceptions.DbtRuntimeError(
-                f"    schema: {self.schema} \n"
-                f"    database: {self.database} \n"
-                f"On Doris, database must be omitted or have the same value as"
-                f" schema."
-            )
+        # database is a Catalog and schema is the Database inside it. Session
+        # configuration must preserve these independent namespace components.
         if self.session_variables is None:
             return
         if not isinstance(self.session_variables, dict):
