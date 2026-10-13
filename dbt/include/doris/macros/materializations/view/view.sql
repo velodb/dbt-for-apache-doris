@@ -17,8 +17,10 @@
 
 {%- materialization view, adapter='doris' -%}
 
-  {%- set existing_relation = load_cached_relation(this) -%}
   {%- set target_relation = this.incorporate(type='view') -%}
+  {% do doris__validate_view_target(target_relation) %}
+  {% do doris__validate_model_constraints() %}
+  {%- set existing_relation = load_cached_relation(this) -%}
 
   -- grab current tables grants config for comparision later on
   {% set grant_config = config.get('grants') %}

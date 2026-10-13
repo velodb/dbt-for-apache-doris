@@ -87,7 +87,7 @@
     {%- endfor -%}
 {%- endmacro %}
 
-{% macro doris__get_show_grant_sql(relation) -%}
+{% macro doris__get_grant_candidates_sql(relation) -%}
     {%- set schema_name = relation.schema | replace("\\", "\\\\") | replace("'", "\\'") -%}
     {%- set relation_name = relation.identifier | replace("\\", "\\\\") | replace("'", "\\'") -%}
     select
@@ -101,9 +101,29 @@
             )
         end as grantee,
         lower(replace(privilege_type, ' ', '_')) as privilege_type
-    from information_schema.table_privileges
+    {# Doris TABLE_CATALOG is 'def' and does not distinguish Catalogs. These
+       rows identify candidate principals; SHOW GRANTS supplies exact objects. #}
+    from `internal`.information_schema.table_privileges
     where table_schema = '{{ schema_name }}'
       and table_name = '{{ relation_name }}'
+{%- endmacro %}
+
+{% macro doris__get_show_grant_sql(relation) -%}
+    {% set current_grants = adapter.get_relation_grants(relation) if execute else {} %}
+    {% set rows = [] %}
+    {% for privilege, grantees in current_grants.items() %}
+        {% for grantee in grantees %}
+            {% set row %}
+                select '{{ grantee | replace("\\", "\\\\") | replace("'", "\\'") }}' as grantee,
+                       '{{ privilege }}' as privilege_type
+            {% endset %}
+            {% do rows.append(row) %}
+        {% endfor %}
+    {% endfor %}
+    {% if rows %}
+        {{ return(rows | join(' union all ')) }}
+    {% endif %}
+    {{ return("select cast(null as string) as grantee, cast(null as string) as privilege_type where false") }}
 {%- endmacro %}
 
 {% macro doris__get_grant_sql(relation, privilege, grantees) -%}
@@ -113,7 +133,7 @@
         ) %}
     {%- endif -%}
     grant {{ doris__grant_privilege(privilege) }}
-    on {{ relation.include(database=false) }}
+    on {{ relation }}
     to {{ doris__grant_user_identity(grantees[0]) }}
 {%- endmacro %}
 
@@ -124,7 +144,7 @@
         ) %}
     {%- endif -%}
     revoke {{ doris__grant_privilege(privilege) }}
-    on {{ relation.include(database=false) }}
+    on {{ relation }}
     from {{ doris__grant_user_identity(grantees[0]) }}
 {%- endmacro %}
 

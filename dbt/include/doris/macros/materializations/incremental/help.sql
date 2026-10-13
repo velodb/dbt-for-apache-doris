@@ -310,6 +310,15 @@ values [("{{ start }}"), ("{{ end }}"))
     {% endif %}
 
     {% set partition_by = config.get('partition_by', none) %}
+    {% if doris__is_iceberg_catalog() %}
+        {% if doris__microbatch_uses_dynamic_partitions() %}
+            {% do exceptions.raise_compiler_error("Iceberg microbatch cannot use OLAP Dynamic Partition properties") %}
+        {% endif %}
+        {% if partition_by is not none and config.get('partition_type', 'RANGE') | upper != 'LIST' %}
+            {% do exceptions.raise_compiler_error("Partitioned Iceberg microbatch requires partition_type='LIST'") %}
+        {% endif %}
+        {{ return(none) }}
+    {% endif %}
     {% if partition_by is string %}
         {% set partition_columns = [partition_by] %}
     {% elif partition_by is none %}
@@ -785,6 +794,28 @@ cannot mutate these physical columns during an incremental run; use
     {{ return(doris__validated_unique_source_select(arg_dict)) }}
 {% endmacro %}
 
+{% macro doris__validate_iceberg_merge_source(source_relation, unique_key) %}
+    {% call statement('iceberg_merge_duplicate_keys', fetch_result=true) %}
+        select count(*) from (
+            select {% for key in doris__normalize_unique_key(unique_key) %}
+                {{ adapter.quote(key) }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            from {{ source_relation }}
+            group by {% for key in doris__normalize_unique_key(unique_key) %}
+                {{ adapter.quote(key) }}{% if not loop.last %}, {% endif %}
+            {% endfor %}
+            having count(*) > 1
+        ) DBT_INTERNAL_DUPLICATE_KEYS
+    {% endcall %}
+    {% if load_result('iceberg_merge_duplicate_keys')['data'][0][0] > 0 %}
+        {% do adapter.drop_relation(source_relation) %}
+        {% do exceptions.raise_compiler_error(
+            "Iceberg merge source " ~ source_relation ~ " contains duplicate unique_key "
+            ~ (unique_key | string) ~ ". Deduplicate the batch before merging model " ~ model.unique_id ~ "."
+        ) %}
+    {% endif %}
+{% endmacro %}
+
 {% macro doris__create_incremental_schema_view(relation, source_sql) %}
     create or replace view {{ relation }} as {{ source_sql }}
 {% endmacro %}
@@ -840,6 +871,57 @@ schema manually, or run:
         {{ return('') }}
     {% endif %}
     {{ return(result['data'][0][1]) }}
+{% endmacro %}
+
+{% macro doris__iceberg_partition_values(partitions) %}
+    {% if partitions is not mapping or not partitions %}
+        {% do exceptions.raise_compiler_error(
+            "Iceberg overwrite_partitions requires a non-empty mapping of partition column to value, "
+            ~ "not Doris named partitions."
+        ) %}
+    {% endif %}
+    {% set result = {} %}
+    {% for column, value in partitions.items() %}
+        {% if column is not string or not column %}
+            {% do exceptions.raise_compiler_error("Iceberg partition columns must be non-empty names") %}
+        {% endif %}
+        {% if value is none %}
+            {% set literal = 'null' %}
+        {% elif value is sameas true or value is sameas false %}
+            {% set literal = 'true' if value else 'false' %}
+        {% elif value is number and value | string | lower not in ['nan', 'inf', '-inf', 'infinity', '-infinity'] %}
+            {% set literal = value | string %}
+        {% elif value is string %}
+            {% set literal = "'" ~ (value | replace("\\", "\\\\") | replace("'", "\\'")) ~ "'" %}
+        {% else %}
+            {% do exceptions.raise_compiler_error("Unsupported Iceberg static partition value for " ~ column) %}
+        {% endif %}
+        {% do result.update({column: literal}) %}
+    {% endfor %}
+    {{ return(result) }}
+{% endmacro %}
+
+{% macro doris__validate_iceberg_partition_source(source_relation, partitions) %}
+    {% set values = doris__iceberg_partition_values(partitions) %}
+    {% set names = adapter.get_columns_in_relation(source_relation) | map(attribute='name') | map('lower') | list %}
+    {% for column in values %}
+        {% if column | lower not in names %}
+            {% do adapter.drop_relation(source_relation) %}
+            {% do exceptions.raise_compiler_error("Iceberg model SELECT must include static partition column " ~ column) %}
+        {% endif %}
+    {% endfor %}
+    {% call statement('iceberg_partition_source_scope', fetch_result=true) %}
+        select count(*) from {{ source_relation }}
+        where {% for column, literal in values.items() %}
+            not ({{ adapter.quote(column) }} <=> {{ literal }}){% if not loop.last %} or {% endif %}
+        {% endfor %}
+    {% endcall %}
+    {% if load_result('iceberg_partition_source_scope')['data'][0][0] > 0 %}
+        {% do adapter.drop_relation(source_relation) %}
+        {% do exceptions.raise_compiler_error(
+            "Iceberg source rows are outside overwrite_partitions scope. Filter the model SELECT to that scope."
+        ) %}
+    {% endif %}
 {% endmacro %}
 
 
@@ -976,6 +1058,11 @@ property. Rebuild it with:
 
 
 {% macro doris__validate_incremental_target(strategy, target_relation, unique_key) %}
+    {% if doris__is_iceberg_catalog(target_relation) and strategy in ['append', 'merge', 'insert_overwrite', 'microbatch'] %}
+        {# Iceberg has logical dbt keys, not Doris physical table models. Do
+           not inspect an OLAP layout that cannot exist on this target. #}
+        {{ return(none) }}
+    {% endif %}
     {% set create_table = doris__show_create_table(
         target_relation,
         statement_name='doris_incremental_validate_target'
@@ -1057,4 +1144,22 @@ Doris incremental strategy '{{ strategy }}' configured unique_key
         )) }}
     {% endif %}
     {{ return(none) }}
+{% endmacro %}
+
+{% macro doris__validate_iceberg_microbatch_source(source_relation) %}
+    {% set batch = doris__microbatch_context() %}
+    {% set event_time = adapter.quote(config.get('event_time')) %}
+    {% set start = batch['event_time_start'].strftime('%Y-%m-%d %H:%M:%S.%f') %}
+    {% set end = batch['event_time_end'].strftime('%Y-%m-%d %H:%M:%S.%f') %}
+    {% call statement('iceberg_microbatch_source_window', fetch_result=true) %}
+        select count(*) from {{ source_relation }}
+        where {{ event_time }} is null or not ({{ event_time }} >= '{{ start }}' and {{ event_time }} < '{{ end }}')
+    {% endcall %}
+    {% if load_result('iceberg_microbatch_source_window')['data'][0][0] > 0 %}
+        {% do adapter.drop_relation(source_relation) %}
+        {% do exceptions.raise_compiler_error(
+            "Iceberg microbatch source contains rows outside model.batch [" ~ start ~ ", " ~ end
+            ~ "). Declare event_time on the upstream ref/source or filter the model SELECT to its batch."
+        ) %}
+    {% endif %}
 {% endmacro %}

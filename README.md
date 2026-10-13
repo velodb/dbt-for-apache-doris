@@ -46,7 +46,7 @@ platform boundaries are described alongside each capability.
 | Sources and freshness | ✅ Supported | `loaded_at_field`, filter, and `loaded_at_query`; sources may use Internal or External Catalog relations |
 | Data tests | ✅ Supported | Singular, generic, ephemeral, and `store_failures` paths |
 | dbt Unit tests | ✅ Supported | Inline-row and CSV fixtures, case-insensitive columns, invalid-input validation, quoted reserved words, Doris-adapted data-type fixtures, and non-truncating VARCHAR fixtures |
-| Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; not database PK/NOT NULL constraints |
+| Model contracts | ✅ Supported | Column names/types for Table, View, and Incremental; database constraints such as NOT NULL/PK are rejected before hooks and target writes |
 | Persisted docs | ✅ Supported | Relation and column comments for Table, View, Incremental, Snapshot, Seed, and Async MV; updating View comments or comment text containing both quote delimiters may require recreation/full refresh |
 | Grants | ✅ Supported | Reconciles supported Doris table privileges for `user` and `user@host` principals on Table, View, Incremental, Seed, Snapshot, and Async MV; role principals are not reconciled |
 | Hooks | ✅ Supported | Pre-hooks and post-hooks across adapter materializations; Doris does not provide transactional rollback for hook side effects |
@@ -167,6 +167,179 @@ columns from the selected Catalog and includes them in `dbt docs generate`.
 The External Catalog must already exist in Doris. DDL and write support depend
 on the corresponding Doris Catalog connector.
 
+### Creating Iceberg targets
+
+Set the profile's `database` to an existing writable Iceberg Catalog and
+`schema` to a Database inside it. An omitted `engine` leaves the SQL engine
+clause unset so Doris can infer it from the target Catalog. An explicit
+`engine='iceberg'` is emitted in CREATE TABLE. Catalog-based inference was
+verified against Doris 4.1.3; an older Doris release may require the explicit
+engine. Explicit engines are preserved, including incompatible values that
+Doris must reject.
+
+Catalog discovery supports dbt's default identifier quoting. Incremental
+strategy selection uses the actual Catalog type reported by Doris, so omitting
+`engine` does not accidentally select OLAP Key validation for Iceberg.
+
+Iceberg CREATE paths do not automatically add Doris UNIQUE KEY,
+Merge-on-Write properties, or default OLAP distribution. A dbt `unique_key`
+remains a logical matching key. Explicit physical options such as
+`duplicate_key`, `distributed_by`, and `properties` are preserved for Doris to
+validate; OLAP-only options are incompatible with Iceberg targets.
+
+Iceberg append uses INSERT INTO. Merge uses native MERGE INTO with null-safe
+matching on the logical `unique_key`, full-row updates and inserts. The frozen
+source is checked for duplicate keys before target schema changes or DML; a
+duplicate batch returns an error instead of choosing an arbitrary row. Merge
+requires a Doris version with native Iceberg MERGE and Iceberg format version 2
+or higher. This workflow was verified on Doris 4.1.3 with V2 tables. Doris
+[documents MERGE as experimental since 4.1.0](https://doris.apache.org/docs/4.x/lakehouse/catalogs/iceberg-catalog/#merge-into).
+OLAP merge retains its existing Unique Key INSERT upsert.
+
+View and Async MV targets must use the Internal Catalog. The adapter rejects
+external targets before model hooks, sql_header or relation replacement. Changing
+an existing Iceberg table model to `materialized='view'` returns a clear error
+and preserves the original table. This check uses the target Catalog regardless
+of the configured engine. Data tests with `store_failures_as='view'` also reject
+external targets before deleting existing audit results. Views and MVs created
+in the Internal Catalog can still query Iceberg sources.
+
+Table model reruns and incremental `--full-refresh` use a non-atomic replacement
+for external targets. The adapter renames the old target to dbt's backup name,
+then renames the fully built intermediate table to the target name. Table models
+delete the backup after publication; incremental full refresh moves it to the
+intermediate name so the existing post-processing and cleanup keep the old data
+until they finish. OLAP targets retain the atomic `REPLACE WITH TABLE` path.
+
+The target name is briefly absent between the two renames. If publication
+fails, the old data remains in the backup table. The existing Table retry path
+can restore it; the incremental retry path uses it as a marker for a complete
+rebuild. Failure after publication does not roll the new target back. Rename
+destinations are not deleted in this replacement path, so conflicting names
+are rejected by Doris. Source, target and backup names must be distinct and
+within the same Catalog and Database. The Catalog must support table rename;
+this behavior was verified with an Iceberg REST Catalog on Doris 4.1.3.
+
+Ordinary Iceberg incremental runs can use
+`incremental_strategy='insert_overwrite'` with no `unique_key`. The adapter
+freezes the model result in a physical Iceberg staging table, then executes
+one native publication against the target and cleans up the stage. It
+does not create the logical metadata View used by ordinary OLAP incrementals.
+This adds a staging write. The target is not renamed during ordinary overwrite.
+
+On an unpartitioned Iceberg target, the SELECT must provide the complete
+replacement result; an empty result clears the table. On a partitioned target,
+an unspecified scope uses native dynamic overwrite: partitions absent from
+the result remain unchanged, including when the result is empty.
+
+To replace a static Iceberg partition, configure a non-empty mapping rather
+than Doris's OLAP partition names:
+
+```sql
+{{ config(materialized='incremental', incremental_strategy='insert_overwrite',
+          partition_type='LIST', partition_by=['dt'],
+          overwrite_partitions={'dt': '2025-01-25'}) }}
+select id, value, dt from {{ ref('input') }} where dt = '2025-01-25'
+```
+
+The model SELECT must return the configured partition columns and keep every
+row within that scope. The adapter validates the frozen source, removes static
+columns from the INSERT projection and emits `PARTITION(dt='2025-01-25')`.
+An empty result clears the selected partition while preserving other
+partitions. String, finite numeric, boolean and NULL values can be configured;
+Doris validates their compatibility with the actual partition specification.
+A non-empty `unique_key` is still rejected for insert_overwrite.
+
+When the mapping contains NULL, the adapter avoids Doris 4.1.3's incorrect
+static `PARTITION(dt=NULL)` path. One native MERGE replaces all rows matching
+the complete logical mapping with null-safe comparisons, including when the
+batch is empty. Other rows remain unchanged. For example,
+`{'dt': none, 'region': 'A'}` replaces only NULL-dt rows in region A;
+`{'dt': none}` replaces the entire NULL-dt scope across other partition fields.
+The SELECT must supply the complete replacement for that scope. This path
+requires native Iceberg MERGE and V2+; V1 fails before changing target data.
+Mappings without NULL retain native static/hybrid INSERT OVERWRITE semantics.
+
+The four `on_schema_change` policies are exercised on Iceberg: `ignore`, `fail`,
+`append_new_columns`, and `sync_all_columns`. External column DDL executes
+through the connector without polling an OLAP Schema Change job; OLAP keeps
+its asynchronous job wait. Supported type changes depend on the connector and
+its actual ALTER result. Schema DDL and overwrite are separate statements and
+do not provide rollback for an entire dbt run. Column documentation uses
+Catalog-qualified metadata and preserves the current type, nullability and
+default when an Iceberg comment changes. Grants and revokes retain the complete
+Catalog/Database/Table name; reconciliation checks exact object grants rather
+than mixing permissions from identically named tables in other Catalogs.
+Updating an existing Iceberg table-level comment remains unsupported by the
+tested Doris 4.1.3 ALTER paths.
+
+Iceberg microbatch freezes and validates each Core UTC event-time window,
+then uses one native MERGE to delete the old window and insert its replacement.
+An empty batch still clears that window; other windows remain unchanged.
+This works on unpartitioned tables and Iceberg LIST partition layouts such as
+`day(event_time)`. Configure `event_time`, `begin` and `batch_size`; use V2 or
+higher tables and a Doris version supporting Iceberg MERGE. Do not configure
+`unique_key`, named `overwrite_partitions`, OLAP Dynamic Partition properties,
+or `partition_by_init`. Core batch execution stays serial. Each window has one
+atomic data publication; a multi-window run and schema changes are not one
+transaction. Missing-target recovery restores the complete backup before
+applying the next window.
+
+Iceberg Snapshots build a helper with the target's current column definitions
+and LIST partition expressions instead of unsupported CREATE TABLE LIKE.
+Repeated runs preserve SCD history and support added columns without polling
+OLAP jobs. Publication uses the same non-atomic backup/rename path. A retry
+restores a missing target from its backup; an existing target plus backup is
+rejected for inspection rather than deleting the recovery copy.
+
+Iceberg seeds load every bound CSV batch into a private table before publishing
+any of it. Ordinary reload verifies the CSV schema and performs one native
+publication, avoiding unsupported TRUNCATE and repeated batch overwrites.
+An unpartitioned target uses INSERT OVERWRITE. A partitioned target uses one
+native MERGE to replace the complete CSV, deleting old partitions absent from
+it and clearing every partition for a header-only CSV. It retains the target's
+schema, partition expressions, location and table identity. Partition detection
+uses the existing table, so this works even when project configuration omits
+its partition layout. This partitioned reload requires native Iceberg MERGE and
+V2+; for V1 use `dbt seed --full-refresh`, whose rename publication is non-atomic.
+Ordinary reload
+defaults to the target's existing field types, including when new samples are
+all NULL or numeric text. Explicit column types take precedence. A schema
+change requires `dbt seed --full-refresh`; first creation and full refresh infer
+types from the CSV unless explicit column types are configured.
+
+First creation publishes the completely loaded stage. Full refresh uses the
+backup replacement described above, after all CSV batches have loaded. A
+database loading error leaves the existing target data intact for retry; the
+adapter retains Doris's configured casting behavior. If a missing target has a
+backup, Seed can restore it before retrying. When both target and backup exist,
+the adapter refuses to remove the recovery copy automatically. These paths
+were verified on Doris 4.1.3, including ordinary V2 reload of identity and
+transformed partition layouts and V1 full refresh. Full-refresh publication
+remains non-atomic, and post-publication errors do not roll data back.
+
+Internal OLAP seeds delegate to Core's existing materialization: ordinary
+reload remains TRUNCATE plus INSERT, and full refresh remains DROP plus CREATE
+and INSERT. CSV batching, bindings, hooks, grants, documentation and result row
+counts retain Core's behavior.
+
+Model contracts validate column names and types. The adapter does not emit
+database constraint DDL and declares those capabilities unsupported. A model
+or column `constraints` declaration returns a specific error before Table,
+Incremental, View or MV hooks, sql_header, cleanup or publication. This applies
+to both Internal and External Catalog targets. `data_tests` such as `not_null`
+remain supported; they check results after writing and do not provide a
+database-enforced constraint.
+
+The opt-in functional regression uses the configured Doris test endpoint and
+an existing writable Catalog:
+
+```bash
+DBT_DORIS_ICEBERG_CATALOG=iceberg_catalog make test
+```
+
+Without that environment variable, Iceberg-specific tests are skipped.
+
 ## End-to-end examples
 
 The [`examples`](https://github.com/velodb/dbt-for-apache-doris/tree/main/examples)
@@ -186,10 +359,10 @@ any of the five demos.
 
 | Strategy | Doris target | Behavior and boundaries |
 | --- | --- | --- |
-| `append` | Duplicate Key table | Appends rows with `INSERT INTO` |
-| `merge` | MOW or MOR Unique Key table | Full-row `INSERT INTO` upsert using Doris Unique Key semantics; requires `unique_key` and does not emit SQL `MERGE INTO` |
-| `insert_overwrite` | Writable Doris table | Whole-table, named-partition, or dynamic-partition `INSERT OVERWRITE`; `unique_key` is rejected |
-| `microbatch` | Duplicate Key table with exact RANGE partitions | One named-partition overwrite per dbt Core UTC window; hour/day/month/year windows; static or dynamic partitions; batches run serially |
+| `append` | OLAP Duplicate Key or writable Iceberg table | Appends rows with `INSERT INTO` |
+| `merge` | OLAP MOW/MOR Unique Key or Iceberg V2+ table | Requires `unique_key`; OLAP uses full-row INSERT upsert, Iceberg uses native MERGE with null-safe matching and duplicate-source validation |
+| `insert_overwrite` | Writable OLAP or Iceberg table | Native `INSERT OVERWRITE`; OLAP supports named/dynamic partitions, Iceberg supports dynamic scope or a static column/value mapping; `unique_key` is rejected |
+| `microbatch` | OLAP Duplicate Key with exact RANGE partitions, or Iceberg V2+ | OLAP overwrites one named partition; Iceberg atomically replaces one UTC window using MERGE, including empty windows; batches run serially |
 
 Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses
 `append`.

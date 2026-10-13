@@ -15,6 +15,22 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
+{% macro doris__catalog_name(database) -%}
+  {% set catalog = database or 'internal' %}
+  {# Core list_schemas passes quote_as_configured(database), whereas Relation
+     fields contain the raw name. Decode one identifier wrapper, then quote once. #}
+  {% if catalog[0:1] == '`' and catalog[-1:] == '`' %}
+    {% set catalog = catalog[1:-1] | replace('``', '`') %}
+  {% endif %}
+  {{ return(catalog) }}
+{%- endmacro %}
+
+
+{% macro doris__information_schema_name(database) -%}
+  {{ return(adapter.quote(doris__catalog_name(database)) ~ '.information_schema') }}
+{%- endmacro %}
+
+
 {% macro doris__list_relations_without_caching(schema_relation) -%}
   {% set catalog = schema_relation.database or 'internal' %}
   {% set information_schema_name = (
@@ -151,11 +167,8 @@
 {%- endmacro %}
 
 {% macro doris__list_schemas(database) -%}
-    {% set catalog = database or 'internal' %}
-    {% set information_schema_name = (
-        adapter.quote(catalog) ~ '.information_schema'
-        if database else 'information_schema'
-    ) %}
+    {% set catalog = doris__catalog_name(database) %}
+    {% set information_schema_name = doris__information_schema_name(database) %}
     {% call statement('list_schemas', fetch_result=True, auto_begin=False) -%}
     select distinct schema_name
     from {{ information_schema_name }}.schemata

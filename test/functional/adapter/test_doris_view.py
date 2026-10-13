@@ -111,3 +111,32 @@ class TestDorisViewFiltered:
 
         result = project.run_sql(f"select name from {relation}", fetch="one")
         assert result[0] == "bob"
+
+
+class TestDorisViewTableTransition:
+    @pytest.fixture(scope="class")
+    def models(self):
+        return {
+            "view_table_transition.sql": """
+{{ config(
+    materialized=var('target_materialization', 'table'),
+    properties={'replication_num': '1'}
+) }}
+select cast(1 as int) as id, cast('original' as string) as value
+union all
+select cast(2 as int) as id, cast('retained' as string) as value
+"""
+        }
+
+    def test_internal_table_can_still_be_replaced_by_view(self, project):
+        name = "view_table_transition"
+        run_dbt(["run", "--select", name])
+        args = ["run", "--select", name, "--vars", "{target_materialization: view}"]
+        run_dbt(list(args))
+        run_dbt(list(args))
+        relation = relation_from_name(project.adapter, name)
+        definition = project.run_sql(f"show create view {relation}", fetch="one")[1]
+        assert "CREATE VIEW" in definition.upper()
+        assert project.run_sql(
+            f"select id, value from {relation} order by id", fetch="all"
+        ) == [(1, "original"), (2, "retained")]

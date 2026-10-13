@@ -26,6 +26,7 @@ a pull request; these can.
 """
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,11 +120,11 @@ class TestGrants:
 
     def test_show_grants_uses_doris_table_privileges(self):
         sql = self.runner().sql(
-            "doris__get_show_grant_sql",
+            "doris__get_grant_candidates_sql",
             FakeRelation(schema="analytics", identifier="orders"),
         )
 
-        assert "from information_schema.table_privileges" in sql
+        assert "from `internal`.information_schema.table_privileges" in sql
         assert "table_schema = 'analytics'" in sql
         assert "table_name = 'orders'" in sql
         assert "as grantee" in sql
@@ -195,6 +196,658 @@ class TestGrants:
             "grant_2",
         ]
         assert len(runner.statements) == 2
+
+
+class TestCreateTableEngine:
+    """Let Doris infer omitted engines and keep OLAP DDL out of lake tables."""
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", ["iceberg", "ICEBERG", "Iceberg"])
+    def test_explicit_iceberg_engine_is_emitted(self, macro, engine):
+        sql = table_runner(config={"engine": engine, "unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("database", [None, "internal", "iceberg_catalog"])
+    def test_omitted_engine_is_inferred_by_doris(self, macro, database):
+        sql = table_runner(config={"unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database=database),
+            "select cast(1 as int) as id",
+        )
+
+        assert "ENGINE" not in sql.upper()
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_unique_ctas_has_no_olap_key_or_default_property(self, engine):
+        config = {"unique_key": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "UNIQUE KEY" not in sql.upper()
+        assert "enable_unique_key_merge_on_write" not in sql
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    def test_internal_unique_ctas_keeps_olap_layout(self, database, engine):
+        config = {"unique_key": ["id"], "distributed_by": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            "doris__create_unique_table_as",
+            False,
+            FakeRelation(database=database),
+            "select cast(1 as int) as id",
+        )
+
+        assert "UNIQUE KEY ( `id` )" in sql
+        assert "DISTRIBUTED BY HASH ( `id` )" in sql
+        assert '"enable_unique_key_merge_on_write" = "true"' in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", ["OLAP", "olap"])
+    def test_explicit_olap_engine_in_external_catalog_is_not_rewritten(
+        self, macro, engine
+    ):
+        sql = table_runner(config={"engine": engine, "unique_key": ["id"]}).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    def test_explicit_external_distribution_is_not_silently_dropped(
+        self, macro, engine
+    ):
+        config = {"unique_key": ["id"], "distributed_by": ["id"], "buckets": 8}
+        if engine is not None:
+            config["engine"] = engine
+        sql = table_runner(config=config).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "DISTRIBUTED BY HASH ( `id` ) BUCKETS 8" in sql
+
+    @pytest.mark.parametrize("macro", CREATE_TABLE_MACROS)
+    def test_explicit_external_duplicate_key_is_not_silently_dropped(self, macro):
+        sql = table_runner(
+            config={
+                "engine": "iceberg",
+                "unique_key": ["id"],
+                "duplicate_key": ["id"],
+            }
+        ).sql(
+            macro,
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+        )
+
+        assert "DUPLICATE KEY ( `id` )" in sql
+        assert "UNIQUE KEY" not in sql.upper()
+
+    @pytest.mark.parametrize(
+        "macro",
+        [
+            "doris__create_incremental_staging_table",
+            "doris__create_view_snapshot_table",
+        ],
+    )
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_physical_helpers_do_not_add_olap_defaults(self, macro, engine):
+        config = {"unique_key": ["id"]}
+        if engine is not None:
+            config["engine"] = engine
+        source = (
+            "select cast(1 as int) as id"
+            if macro == "doris__create_incremental_staging_table"
+            else FakeRelation(database="iceberg_catalog", identifier="source_view")
+        )
+        sql = table_runner(config=config).sql(
+            macro,
+            FakeRelation(database="iceberg_catalog", identifier="target__dbt_tmp"),
+            source,
+        )
+
+        assert "DISTRIBUTED BY" not in sql.upper()
+        assert "enable_duplicate_without_keys_by_default" not in sql
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    @pytest.mark.parametrize("unique", [False, True])
+    def test_external_documented_table_and_source_do_not_add_olap_defaults(
+        self, engine, unique
+    ):
+        class DocumentedAdapter(FakeAdapter):
+            @staticmethod
+            def get_columns_in_relation(relation):
+                return [SimpleNamespace(name="id", data_type="INT")]
+
+        config = {"unique_key": ["id"], "persist_docs": {"columns": True}}
+        if engine is not None:
+            config["engine"] = engine
+        runner = table_runner(
+            config=config,
+            model={"columns": {"id": {"description": "Identifier"}}},
+        )
+        runner.context["adapter"] = DocumentedAdapter()
+        runner.render(
+            "doris__create_documented_table_as",
+            False,
+            FakeRelation(database="iceberg_catalog"),
+            "select cast(1 as int) as id",
+            unique=unique,
+        )
+        creates = [
+            statement.sql
+            for statement in runner.statements
+            if statement.name
+            in {"create_documented_table_source", "create_documented_table"}
+        ]
+
+        assert len(creates) == 2
+        for sql in creates:
+            assert "UNIQUE KEY" not in sql.upper()
+            assert "DISTRIBUTED BY" not in sql.upper()
+            assert "enable_unique_key_merge_on_write" not in sql
+            assert "enable_duplicate_without_keys_by_default" not in sql
+            if engine is None:
+                assert "ENGINE" not in sql.upper()
+            else:
+                assert f"ENGINE = {engine}" in sql
+        assert "COMMENT 'Identifier'" in creates[1]
+
+
+class TestExchangeRelation:
+    """External replacement preserves the old table; OLAP keeps its atomic swap."""
+
+    @staticmethod
+    def runner(engine=None):
+        config = {} if engine is None else {"engine": engine}
+        return MacroRunner(
+            "adapters/relation.sql",
+            context={
+                "config": FakeConfig(config),
+                "make_backup_relation": lambda relation, relation_type: relation.incorporate(
+                    path={"identifier": relation.identifier + "__dbt_backup"},
+                    type=relation_type,
+                ),
+            },
+        )
+
+    @staticmethod
+    def statements(runner):
+        return [
+            (statement.name, " ".join(statement.sql.split()))
+            for statement in runner.statements
+        ]
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_external_replacement_preserves_target_until_publish(
+        self, engine, drop_target
+    ):
+        runner = self.runner(engine)
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, drop_target)
+
+        expected = [
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders` rename `orders__dbt_backup`",
+            ),
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_tmp` rename `orders`",
+            ),
+        ]
+        if drop_target:
+            expected.append(
+                (
+                    "drop_relation",
+                    "drop table if exists `iceberg_catalog`.`dbt_test`.`orders__dbt_backup`",
+                )
+            )
+        else:
+            expected.append(
+                (
+                    "rename_relation",
+                    "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_backup` "
+                    "rename `orders__dbt_tmp`",
+                )
+            )
+        assert self.statements(runner) == expected
+
+    @pytest.mark.parametrize("drop_destination", [None, False, True])
+    def test_rename_destination_drop_is_optional(self, drop_destination):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+        options = (
+            {} if drop_destination is None else {"drop_destination": drop_destination}
+        )
+
+        runner.render("doris__rename_relation", source, target, **options)
+
+        expected = []
+        if drop_destination is not False:
+            expected.append(
+                (
+                    "drop_relation",
+                    "drop table if exists `iceberg_catalog`.`dbt_test`.`orders`",
+                )
+            )
+        expected.append(
+            (
+                "rename_relation",
+                "alter table `iceberg_catalog`.`dbt_test`.`orders__dbt_tmp` rename `orders`",
+            )
+        )
+        assert self.statements(runner) == expected
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_olap_keeps_atomic_replace(self, database, engine, drop_target):
+        runner = self.runner(engine)
+        target = FakeRelation(database=database, identifier="orders")
+        source = FakeRelation(database=database, identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, drop_target)
+
+        assert self.statements(runner) == [
+            (
+                "exchange_relation",
+                f"ALTER TABLE {target} REPLACE WITH TABLE `orders__dbt_tmp` "
+                f"PROPERTIES('swap' = '{not drop_target}');",
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            FakeRelation(database="other_catalog", identifier="orders__dbt_tmp"),
+            FakeRelation(
+                database="iceberg_catalog",
+                schema="other_schema",
+                identifier="orders__dbt_tmp",
+            ),
+        ],
+    )
+    def test_external_cross_namespace_is_rejected_before_writes(self, source):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+
+        with pytest.raises(CapturedCompilerError, match="(?i)catalog|schema"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    def test_external_self_replacement_is_rejected_before_writes(self):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders")
+
+        with pytest.raises(CapturedCompilerError, match="(?i)distinct|different"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    def test_external_backup_name_collision_is_rejected_before_writes(self):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(
+            database="iceberg_catalog", identifier="orders__dbt_backup"
+        )
+
+        with pytest.raises(CapturedCompilerError, match="(?i)backup"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+    @pytest.mark.parametrize("drop_target", [False, True])
+    def test_failed_publish_does_not_drop_backup(self, drop_target):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier="orders")
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+        capture = runner.context["statement"]
+
+        def fail_publish(name=None, caller=None, **kwargs):
+            rendered_sql = caller()
+            capture(name, caller=lambda: rendered_sql, **kwargs)
+            if "orders__dbt_tmp` rename" in rendered_sql:
+                raise RuntimeError("publish failed")
+            return ""
+
+        runner.context["statement"] = fail_publish
+        with pytest.raises(RuntimeError, match="publish failed"):
+            runner.render("exchange_relation", target, source, drop_target)
+
+        assert [statement.name for statement in runner.statements] == [
+            "rename_relation",
+            "rename_relation",
+        ]
+        assert "`orders` rename `orders__dbt_backup`" in runner.statements[0].sql
+
+    @pytest.mark.parametrize("target_name", ["select", "order details", "order`daily"])
+    def test_external_rename_quotes_target_identifier(self, target_name):
+        runner = self.runner()
+        target = FakeRelation(database="iceberg_catalog", identifier=target_name)
+        source = FakeRelation(database="iceberg_catalog", identifier="orders__dbt_tmp")
+
+        runner.render("exchange_relation", target, source, True)
+
+        expected_identifier = "`" + target_name.replace("`", "``") + "`"
+        assert runner.statements[1].sql.endswith("rename " + expected_identifier)
+
+    @pytest.mark.parametrize("engine", [None, "OLAP", "iceberg"])
+    @pytest.mark.parametrize("view_position", ["target", "source"])
+    def test_views_are_rejected_before_writes(self, engine, view_position):
+        runner = self.runner(engine)
+        target = FakeRelation(
+            database="iceberg_catalog",
+            identifier="orders",
+            relation_type="view" if view_position == "target" else "table",
+        )
+        source = FakeRelation(
+            database="iceberg_catalog",
+            identifier="orders__dbt_tmp",
+            relation_type="view" if view_position == "source" else "table",
+        )
+
+        with pytest.raises(CapturedCompilerError, match="Views"):
+            runner.render("exchange_relation", target, source, True)
+
+        assert runner.statements == []
+
+
+class TestSeedEngine:
+    @staticmethod
+    def runner(database, config):
+        class SeedAdapter(FakeAdapter):
+            @staticmethod
+            def convert_type(agate_table, column_index):
+                return "INT"
+
+            @staticmethod
+            def quote_seed_column(column_name, quote_columns):
+                return f"`{column_name}`"
+
+        return MacroRunner(
+            "materializations/seed/helpers.sql",
+            "adapters/relation.sql",
+            context={
+                "adapter": SeedAdapter(),
+                "config": FakeConfig(config),
+                "this": FakeRelation(database=database),
+            },
+        )
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "ICEBERG"])
+    def test_external_seed_does_not_add_engine_or_distribution_defaults(self, engine):
+        config = {} if engine is None else {"engine": engine}
+        sql = self.runner("iceberg_catalog", config).sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert "DISTRIBUTED BY" not in sql.upper()
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "OLAP", "olap"])
+    def test_internal_seed_keeps_default_hash_distribution(self, database, engine):
+        config = {} if engine is None else {"engine": engine}
+        sql = self.runner(database, config).sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert "DISTRIBUTED BY HASH ( `id` ) BUCKETS 10" in sql
+        if engine is None:
+            assert "ENGINE" not in sql.upper()
+        else:
+            assert f"ENGINE = {engine}" in sql
+
+    @pytest.mark.parametrize(
+        "target_catalog,stage_catalog,expects_distribution",
+        [
+            ("internal", "iceberg_catalog", False),
+            ("iceberg_catalog", "internal", True),
+        ],
+    )
+    def test_seed_table_creation_uses_explicit_relation(
+        self, target_catalog, stage_catalog, expects_distribution
+    ):
+        runner = self.runner(target_catalog, {})
+        stage = FakeRelation(database=stage_catalog, identifier="seed__dbt_tmp")
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["id"]),
+            stage,
+        )
+
+        assert sql.startswith(f"create table {stage.render()} (")
+        assert "my_model" not in sql
+        assert ("DISTRIBUTED BY HASH" in sql) is expects_distribution
+        assert len(runner.statements) == 1
+        assert " ".join(runner.statements[0].sql.split()) == sql
+
+    def test_seed_table_creation_preserves_two_argument_call(self):
+        runner = self.runner("iceberg_catalog", {"engine": "iceberg"})
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {"column_types": {"id": "BIGINT"}}},
+            SimpleNamespace(column_names=["id"]),
+        )
+
+        assert sql.startswith(f"create table {runner.context['this'].render()} (")
+        assert "`id` BIGINT" in sql
+        assert "ENGINE = iceberg" in sql
+
+    def test_empty_seed_uses_existing_types_by_normalized_column_name(self):
+        runner = self.runner("iceberg_catalog", {})
+        inferred_columns = []
+
+        def infer_type(table, index):
+            inferred_columns.append(table.column_names[index])
+            return "BOOLEAN"
+
+        runner.context["adapter"].convert_type = infer_type
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {}},
+            SimpleNamespace(column_names=["ID", "Label", "new_flag"], rows=[]),
+            stage,
+            inferred_column_types={"id": "BIGINT", "label": "STRING"},
+        )
+
+        assert "`ID` BIGINT" in sql
+        assert "`Label` STRING" in sql
+        assert "`new_flag` BOOLEAN" in sql
+        assert inferred_columns == ["new_flag"]
+
+    def test_explicit_seed_types_override_empty_seed_fallback(self):
+        runner = self.runner("iceberg_catalog", {})
+
+        def unexpected_inference(table, index):
+            raise AssertionError("An existing empty seed column must retain its type")
+
+        runner.context["adapter"].convert_type = unexpected_inference
+
+        sql = runner.sql(
+            "doris__create_csv_table",
+            {"config": {"column_types": {"id": "INT", "Label": "VARCHAR(40)"}}},
+            SimpleNamespace(column_names=["id", "Label"], rows=[]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+            inferred_column_types={"id": "BIGINT", "label": "STRING"},
+        )
+
+        assert "`id` INT" in sql
+        assert "`Label` VARCHAR(40)" in sql
+
+
+class TestSeedCsvLoading:
+    @staticmethod
+    def runner(batch_size=2, binding_char="%s"):
+        queries = []
+
+        class SeedAdapter(FakeAdapter):
+            @staticmethod
+            def quote_seed_column(column_name, quote_columns):
+                if quote_columns is False:
+                    return column_name
+                return "`" + column_name.replace("`", "``") + "`"
+
+            @staticmethod
+            def add_query(sql, bindings, abridge_sql_log):
+                queries.append((" ".join(sql.split()), bindings, abridge_sql_log))
+
+        adapter = SeedAdapter()
+        runner = MacroRunner(
+            "materializations/seed/helpers.sql",
+            context={
+                "adapter": adapter,
+                "this": FakeRelation(database="iceberg_catalog", identifier="seed"),
+                "get_batch_size": lambda: batch_size,
+                "get_binding_char": lambda: binding_char,
+                "get_seed_column_quoted_csv": lambda model, names: ", ".join(
+                    adapter.quote_seed_column(
+                        name, model["config"].get("quote_columns")
+                    )
+                    for name in names
+                ),
+            },
+        )
+        return runner, queries
+
+    def test_batches_bind_all_values_and_only_write_to_stage(self):
+        runner, queries = self.runner(batch_size=2)
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+        table = SimpleNamespace(
+            column_names=["id", "label", "nullable"],
+            rows=[
+                (1, "O'Reilly", None),
+                (2, "path\\value", ""),
+                (3, "snow\u2603", False),
+            ],
+        )
+
+        first_batch_sql = runner.sql(
+            "doris__load_csv_rows_into_relation", {"config": {}}, table, stage
+        )
+
+        assert len(queries) == 2
+        assert [query[1] for query in queries] == [
+            [1, "O'Reilly", None, 2, "path\\value", ""],
+            [3, "snow\u2603", False],
+        ]
+        assert [query[0].count("%s") for query in queries] == [6, 3]
+        assert all(query[2] is True for query in queries)
+        assert all(query[0].startswith(f"insert into {stage.render()} (") for query in queries)
+        assert all("`seed`" not in query[0] for query in queries)
+        assert all("O'Reilly" not in query[0] for query in queries)
+        assert all("path\\value" not in query[0] for query in queries)
+        assert first_batch_sql == queries[0][0]
+
+    def test_empty_csv_returns_empty_sql_without_queries(self):
+        runner, queries = self.runner()
+
+        sql = runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {}},
+            SimpleNamespace(column_names=["id", "label"], rows=[]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert sql == ""
+        assert queries == []
+
+    def test_csv_column_names_are_quoted_without_touching_bound_data(self):
+        runner, queries = self.runner()
+
+        runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {}},
+            SimpleNamespace(
+                column_names=["select", "order details", "tick`name"],
+                rows=[("a'quoted", None, "value")],
+            ),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert "(`select`, `order details`, `tick``name`)" in queries[0][0]
+        assert queries[0][1] == ["a'quoted", None, "value"]
+
+    def test_quote_columns_false_and_binding_char_are_respected(self):
+        runner, queries = self.runner(binding_char="?")
+
+        runner.render(
+            "doris__load_csv_rows_into_relation",
+            {"config": {"quote_columns": False}},
+            SimpleNamespace(column_names=["id", "label"], rows=[(1, "one")]),
+            FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp"),
+        )
+
+        assert "(id,label) values (?,?)" in queries[0][0].replace(", ", ",")
+        assert queries[0][1] == [1, "one"]
+
+    def test_later_batch_failure_propagates_without_target_write(self):
+        runner, queries = self.runner(batch_size=1)
+        capture = runner.context["adapter"].add_query
+
+        def fail_second_batch(sql, bindings, abridge_sql_log):
+            capture(sql, bindings, abridge_sql_log)
+            if len(queries) == 2:
+                raise RuntimeError("CSV batch rejected")
+
+        runner.context["adapter"].add_query = fail_second_batch
+        stage = FakeRelation(database="iceberg_catalog", identifier="seed__dbt_tmp")
+        with pytest.raises(RuntimeError, match="CSV batch rejected"):
+            runner.render(
+                "doris__load_csv_rows_into_relation",
+                {"config": {}},
+                SimpleNamespace(column_names=["id"], rows=[(1,), (2,), (3,)]),
+                stage,
+            )
+
+        assert len(queries) == 2
+        assert all(query[0].startswith(f"insert into {stage.render()} (") for query in queries)
 
 
 class TestSingleStatementDDL:
@@ -399,6 +1052,73 @@ class TestContractProjection:
         ), f"an enforced contract should cast to the declared types: {sql}"
 
 
+class TestExternalViewTargets:
+    @pytest.mark.parametrize("database", ["iceberg_catalog", "other_external_catalog"])
+    @pytest.mark.parametrize("engine", [None, "iceberg", "OLAP"])
+    def test_create_view_rejects_external_catalog_before_contract_validation(
+        self, database, engine
+    ):
+        def unexpected_contract_validation(sql):
+            raise AssertionError("External Views must fail before validating their query")
+
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={
+                "config": FakeConfig({
+                    "engine": engine,
+                    "contract": SimpleNamespace(enforced=True),
+                    "sql_header": "set enable_insert_strict=true;",
+                }),
+                "get_assert_columns_equivalent": unexpected_contract_validation,
+            },
+        )
+
+        with pytest.raises(CapturedCompilerError, match="View in external Catalog"):
+            runner.render(
+                "doris__create_view_as",
+                FakeRelation(database=database, relation_type="view"),
+                "select 1 as id",
+            )
+        assert runner.statements == []
+
+    @pytest.mark.parametrize("database", [None, "internal", "INTERNAL"])
+    @pytest.mark.parametrize("engine", [None, "iceberg"])
+    def test_internal_view_target_is_independent_of_table_engine(self, database, engine):
+        runner = MacroRunner(
+            "materializations/view/create_view_as.sql",
+            context={"config": FakeConfig({"engine": engine})},
+        )
+        relation = FakeRelation(database=database, relation_type="view")
+
+        sql = runner.sql("doris__create_view_as", relation, "select 1 as id")
+
+        assert f"create or replace view {relation}" in sql
+        assert "ENGINE" not in sql
+
+    @pytest.mark.parametrize("engine", [None, "iceberg", "OLAP"])
+    def test_materialization_rejects_external_catalog_before_hooks(self, engine):
+        def unexpected_hook(*args, **kwargs):
+            raise AssertionError("External View rejection must happen before hooks")
+
+        target = FakeRelation(database="iceberg_catalog", relation_type="view")
+        runner = MacroRunner(
+            "materializations/view/view.sql",
+            "materializations/view/create_view_as.sql",
+            context={
+                "this": target,
+                "adapter": FakeAdapter(),
+                "config": FakeConfig({"engine": engine}),
+                "load_cached_relation": lambda relation: relation.incorporate(type="table"),
+                "run_hooks": unexpected_hook,
+                "pre_hooks": [],
+            },
+        )
+
+        with pytest.raises(CapturedCompilerError, match="View in external Catalog"):
+            runner.render("materialization_view_doris")
+        assert runner.statements == []
+
+
 class TestViewContractValidation:
     def test_enforced_contract_runs_preflight_before_create(self):
         class Contract:
@@ -441,6 +1161,178 @@ class TestViewContractValidation:
         assert validated == []
 
 
+@pytest.mark.parametrize(
+    "database,engine,is_olap",
+    [
+        ("iceberg_catalog", None, False),
+        ("iceberg_catalog", "iceberg", False),
+        ("iceberg_catalog", "ICEBERG", False),
+        (None, None, True),
+        ("internal", None, True),
+        ("internal", "OLAP", True),
+    ],
+)
+class TestIncrementalSchemaChange:
+    """Iceberg ALTER is synchronous; OLAP retains schema-job ordering."""
+
+    def runner(self, database, engine, ddl_error=None):
+        events = []
+
+        class SchemaAdapter(FakeAdapter):
+            @staticmethod
+            def get_latest_schema_change_job_id(relation):
+                events.append(("latest_job", relation))
+                return "42"
+
+            @staticmethod
+            def wait_for_schema_change(relation, previous_job_id):
+                events.append(("wait", relation, previous_job_id))
+
+        config = {} if engine is None else {"engine": engine}
+        runner = MacroRunner(
+            *TABLE_MACROS,
+            "adapters/columns.sql",
+            context={"adapter": SchemaAdapter(), "config": FakeConfig(config)},
+        )
+        original_statement = runner.context["statement"]
+
+        def statement(name=None, fetch_result=False, auto_begin=True, caller=None):
+            sql = caller() if caller is not None else ""
+            events.append(("ddl", " ".join(sql.split())))
+            if ddl_error is not None:
+                raise ddl_error
+            return original_statement(
+                name,
+                fetch_result=fetch_result,
+                auto_begin=auto_begin,
+                caller=lambda: sql,
+            )
+
+        def add_remove_columns(relation, add_columns, remove_columns):
+            events.append(("add_remove", relation, add_columns, remove_columns))
+            if ddl_error is not None:
+                raise ddl_error
+
+        runner.context.update(
+            {
+                "statement": statement,
+                "alter_relation_add_remove_columns": add_remove_columns,
+                "alter_column_type": lambda *args: runner.context[
+                    "doris__alter_column_type"
+                ](*args),
+            }
+        )
+        return runner, events, FakeRelation(database=database)
+
+    @staticmethod
+    def changes(add_columns=None, remove_columns=None, new_types=None):
+        return {
+            "source_not_in_target": add_columns or [],
+            "target_not_in_source": remove_columns or [],
+            "new_target_types": new_types or [],
+        }
+
+    @staticmethod
+    def expected_events(relation, ddl_event, is_olap):
+        if is_olap:
+            return [
+                ("latest_job", relation),
+                ddl_event,
+                ("wait", relation, "42"),
+            ]
+        return [ddl_event]
+
+    def test_append_new_columns_uses_engine_specific_completion(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+        added = [FakeColumn("extra")]
+        removed = [FakeColumn("old_value")]
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "append_new_columns",
+            relation,
+            self.changes(added, removed),
+        )
+
+        assert events == self.expected_events(
+            relation, ("add_remove", relation, added, None), is_olap
+        )
+
+    @pytest.mark.parametrize(
+        "added_names,removed_names",
+        [(["extra"], []), ([], ["old_value"]), (["extra"], ["old_value"])],
+    )
+    def test_sync_all_columns_adds_and_removes_before_waiting(
+        self, database, engine, is_olap, added_names, removed_names
+    ):
+        runner, events, relation = self.runner(database, engine)
+        added = [FakeColumn(name) for name in added_names]
+        removed = [FakeColumn(name) for name in removed_names]
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "sync_all_columns",
+            relation,
+            self.changes(added, removed),
+        )
+
+        assert events == self.expected_events(
+            relation, ("add_remove", relation, added, removed), is_olap
+        )
+
+    def test_sync_all_columns_changes_types_through_real_alter_macro(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render(
+            "doris__sync_column_schemas",
+            "sync_all_columns",
+            relation,
+            self.changes(new_types=[{"column_name": "id", "new_type": "BIGINT"}]),
+        )
+
+        sql = f"alter table {relation} modify column `id` BIGINT"
+        assert [" ".join(statement.sql.split()) for statement in runner.statements] == [sql]
+        assert events == self.expected_events(relation, ("ddl", sql), is_olap)
+
+    def test_direct_type_change_uses_engine_specific_completion(
+        self, database, engine, is_olap
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render("doris__alter_column_type", relation, "value", "varchar(64)")
+
+        sql = f"alter table {relation} modify column `value` varchar(64)"
+        assert events == self.expected_events(relation, ("ddl", sql), is_olap)
+
+    @pytest.mark.parametrize("mode", ["append_new_columns", "sync_all_columns"])
+    def test_unchanged_schema_has_no_ddl_or_job_queries(
+        self, database, engine, is_olap, mode
+    ):
+        runner, events, relation = self.runner(database, engine)
+
+        runner.render("doris__sync_column_schemas", mode, relation, self.changes())
+
+        assert events == []
+        assert runner.statements == []
+
+    def test_alter_failure_is_propagated_without_waiting(
+        self, database, engine, is_olap
+    ):
+        error = RuntimeError("Unsupported type conversion")
+        runner, events, relation = self.runner(database, engine, ddl_error=error)
+
+        with pytest.raises(RuntimeError, match="Unsupported type conversion"):
+            runner.render("doris__alter_column_type", relation, "id", "STRING")
+
+        expected = [("latest_job", relation)] if is_olap else []
+        expected.append(("ddl", f"alter table {relation} modify column `id` STRING"))
+        assert events == expected
+
+
 class TestPersistDocs:
     """Column comments come from dbt as {column_name: column_info_dict}.
 
@@ -450,7 +1342,7 @@ class TestPersistDocs:
     """
 
     def runner(self):
-        return MacroRunner("adapters/columns.sql")
+        return MacroRunner("adapters/columns.sql", "adapters/relation.sql")
 
     def test_column_comment_uses_description_only(self):
         runner = self.runner()
@@ -520,6 +1412,8 @@ INCREMENTAL_MACROS = (
     "materializations/incremental/incremental.sql",
     "materializations/incremental/help.sql",
     "materializations/incremental/strategies.sql",
+    "adapters/relation.sql",
+    "adapters/metadata.sql",
 )
 
 
