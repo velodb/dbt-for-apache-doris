@@ -79,14 +79,17 @@ python -m pip install "dbt-for-apache-doris==1.1.1"
 dbt --version
 ```
 
-This command installs the published 1.1.0 package. That release predates the
-Catalog-qualified relations, `session_variables`, and Iceberg target workflows
-described in the newer source code. Use the
+The published 1.1.1 package includes Catalog-qualified relations and the Iceberg
+target workflows described below. The older 1.1.0 release predates these
+capabilities; use the
 [1.1.0 README](https://github.com/velodb/dbt-for-apache-doris/blob/v1.1.0/README.md)
-for that release's configuration. For newer capabilities, install a release
-that includes the required changes or install the tested source checkout with
-`python -m pip install .`. A source checkout must contain the relevant changes;
-an open pull request is not automatically available from `main` or PyPI.
+for that release's configuration and follow the profile migration note below
+when upgrading.
+
+The optional `session_variables` profile configuration is not included in
+1.1.1. For capabilities added after 1.1.1, install a later release that includes
+them or install a tested source checkout with `python -m pip install .`.
+An open pull request is not automatically available from `main` or PyPI.
 
 On Windows, create the environment with `py -m venv .venv`, activate it using
 `.venv\Scripts\Activate.ps1`, and run the same `pip install` command.
