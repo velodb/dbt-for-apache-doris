@@ -75,7 +75,7 @@ Install the VeloDB-maintained distribution from PyPI:
 ```shell
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install "dbt-for-apache-doris==1.1.0"
+python -m pip install "dbt-for-apache-doris==1.1.1"
 dbt --version
 ```
 
