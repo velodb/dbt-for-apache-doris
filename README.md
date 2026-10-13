@@ -108,6 +108,20 @@ doris_demo:
 On Doris, dbt `schema` is a Doris Database. Omit dbt `database` for the
 Internal Catalog.
 
+To apply Doris session variables to every dbt connection, add a
+`session_variables` mapping to the output:
+
+```yaml
+      session_variables:
+        time_zone: "Asia/Shanghai"
+        exec_mem_limit: 8589934592
+```
+
+Values may be strings, integers, or booleans. Variable names must contain only
+letters, digits, and underscores and must start with a letter or underscore.
+The adapter applies these settings after opening each connection, so they are
+available to dbt commands, models, tests, and hooks that use that connection.
+
 Create a new `doris-demo` directory with a `models` subdirectory, then add:
 
 ```yaml

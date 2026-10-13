@@ -24,4 +24,8 @@ default:
       username: <user>
       password: <pass>
       schema: <db>
+      # optional: apply Doris session variables after each connection opens
+      # session_variables:
+      #   time_zone: "Asia/Shanghai"
+      #   exec_mem_limit: 8589934592
   target: dev
