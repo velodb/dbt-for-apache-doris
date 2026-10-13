@@ -32,10 +32,10 @@ platform boundaries are described alongside each capability.
 | Capability | Status | Current support and boundaries |
 | --- | --- | --- |
 | Table | ✅ Supported | Duplicate Key CTAS; configurable HASH distribution, integer buckets, RANGE/LIST partitions, properties, contracts, docs, grants, and hooks. Unique Key creation belongs to incremental `merge` |
-| View | ✅ Supported | Standard lifecycle, contracts, docs, grants, and hooks; relation-type switching is not zero-downtime |
+| View | ✅ Supported | Internal Catalog targets; standard lifecycle, contracts, docs, grants, and hooks; relation-type switching is not zero-downtime |
 | Incremental | ✅ Supported | Four strategies and every `on_schema_change` mode; boundaries are listed below |
-| Snapshot | ✅ Supported | `check`/`timestamp`, hard-delete modes, schema evolution, atomic replacement, and recovery; same-target runs must be serialized by the scheduler |
-| Materialized view | ✅ Supported | Standard dbt `materialized_view`, implemented with Doris Async MV; build/refresh lifecycle, task waiting, configuration changes, atomic replacement, and recovery. Same-target dbt runs must be serialized by the scheduler |
+| Snapshot | ✅ Supported | `check`/`timestamp`, hard-delete modes, schema evolution, and recovery; OLAP replacement is atomic, Iceberg uses non-atomic backup/rename publication; same-target runs must be serialized by the scheduler |
+| Materialized view | ✅ Supported | Internal Catalog targets using Doris Async MV; build/refresh lifecycle, task waiting, configuration changes, atomic replacement, and recovery. Same-target dbt runs must be serialized by the scheduler |
 | Seed | ✅ Supported | CSV loading, type inference, `column_types`, and `ref` |
 | Ephemeral | ✅ Supported | Compiled and inlined by dbt Core |
 
@@ -78,6 +78,15 @@ source .venv/bin/activate
 python -m pip install "dbt-for-apache-doris==1.1.0"
 dbt --version
 ```
+
+This command installs the published 1.1.0 package. That release predates the
+Catalog-qualified relations, `session_variables`, and Iceberg target workflows
+described in the newer source code. Use the
+[1.1.0 README](https://github.com/velodb/dbt-for-apache-doris/blob/v1.1.0/README.md)
+for that release's configuration. For newer capabilities, install a release
+that includes the required changes or install the tested source checkout with
+`python -m pip install .`. A source checkout must contain the relevant changes;
+an open pull request is not automatically available from `main` or PyPI.
 
 On Windows, create the environment with `py -m venv .venv`, activate it using
 `.venv\Scripts\Activate.ps1`, and run the same `pip install` command.
@@ -150,7 +159,13 @@ On Windows PowerShell, set the password with
 
 dbt relation fields map to Doris as `database.schema.identifier` →
 `catalog.database.table`. Set `database` to an existing Doris Catalog and
-`schema` to the Database inside that Catalog:
+`schema` to the Database inside that Catalog.
+
+When migrating a 1.1.0 Internal Catalog profile that sets both `database` and
+`schema` to the same Doris Database name, remove `database` or set it to
+`internal`. In the newer namespace mapping, these are independent values.
+
+For example, configure an External Catalog source as follows:
 
 ```yaml
 sources:
@@ -361,7 +376,7 @@ any of the five demos.
 | --- | --- | --- |
 | `append` | OLAP Duplicate Key or writable Iceberg table | Appends rows with `INSERT INTO` |
 | `merge` | OLAP MOW/MOR Unique Key or Iceberg V2+ table | Requires `unique_key`; OLAP uses full-row INSERT upsert, Iceberg uses native MERGE with null-safe matching and duplicate-source validation |
-| `insert_overwrite` | Writable OLAP or Iceberg table | Native `INSERT OVERWRITE`; OLAP supports named/dynamic partitions, Iceberg supports dynamic scope or a static column/value mapping; `unique_key` is rejected |
+| `insert_overwrite` | Writable OLAP or Iceberg table | Native `INSERT OVERWRITE`; OLAP supports named/dynamic partitions, Iceberg supports dynamic scope or a static column/value mapping; mappings containing NULL use native MERGE and require V2+; `unique_key` is rejected |
 | `microbatch` | OLAP Duplicate Key with exact RANGE partitions, or Iceberg V2+ | OLAP overwrites one named partition; Iceberg atomically replaces one UTC window using MERGE, including empty windows; batches run serially |
 
 Without an explicit strategy, `unique_key` selects `merge`; otherwise dbt uses
