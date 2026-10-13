@@ -54,7 +54,18 @@ class TestDorisStoreTestFailures(BaseStoreTestFailures):
 
 
 class TestDorisStoreTestFailuresLimit(BaseStoreTestFailuresLimit):
-    pass
+    # The upstream class clears project_config_update, so its failures are stored
+    # in dbt's default "_dbt_test__audit" schema. The inherited clean_up fixture
+    # drops only the parent's "_dbt_test__aud" schema and leaves that one behind.
+    @pytest.fixture(scope="function", autouse=True)
+    def drop_default_audit_schema(self, project):
+        yield
+        with project.adapter.connection_named("__test"):
+            relation = project.adapter.Relation.create(
+                database=project.database,
+                schema=f"{project.test_schema}_dbt_test__audit",
+            )
+            project.adapter.drop_schema(relation)
 
 
 class DorisStoreFailuresAsSeedTypes:

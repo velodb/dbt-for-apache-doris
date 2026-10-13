@@ -122,7 +122,7 @@ run_fixture() {
 fixture=$test_root/success
 make_fixture "$fixture"
 run_fixture "$fixture" >/dev/null
-[[ $(wc -l <"$fixture/marker") == 5 ]] || fail "success run did not execute five demos"
+[[ $(wc -l <"$fixture/marker") -eq 5 ]] || fail "success run did not execute five demos"
 [[ $(awk -F '\t' 'NR > 1 && $2 == "passed" { count++ } END { print count + 0 }' "$fixture/results/summary.tsv") == 5 ]] || \
   fail "success summary does not contain five passed demos"
 grep -Fq 'Using a password' "$fixture/results/environment.txt" || \
@@ -134,7 +134,7 @@ MYSQL_PWD=stale \
 TEST_DORIS_PASSWORD= \
 EXPECT_MYSQL_PWD_UNSET=1 \
   run_fixture "$fixture" >/dev/null
-[[ $(wc -l <"$fixture/marker") == 5 ]] || fail "password cleanup run did not execute five demos"
+[[ $(wc -l <"$fixture/marker") -eq 5 ]] || fail "password cleanup run did not execute five demos"
 
 fixture=$test_root/retry
 make_fixture "$fixture"
@@ -152,7 +152,7 @@ FAIL_DAILY=1 run_fixture "$fixture" >/dev/null 2>&1
 status=$?
 set -e
 [[ $status == 7 ]] || fail "expected first runner status 7, got $status"
-[[ $(wc -l <"$fixture/marker") == 5 ]] || fail "failure stopped later demos"
+[[ $(wc -l <"$fixture/marker") -eq 5 ]] || fail "failure stopped later demos"
 grep -Fq $'daily-order-summary\tfailed(runner=7,tee=0)' "$fixture/results/summary.tsv" || \
   fail "runner failure was not recorded"
 
@@ -170,7 +170,7 @@ PATH="$fixture/fake-bin:$PATH" run_fixture "$fixture" >/dev/null 2>&1
 status=$?
 set -e
 [[ $status == 9 ]] || fail "expected tee status 9, got $status"
-[[ $(wc -l <"$fixture/marker") == 5 ]] || fail "tee failure stopped later demos"
+[[ $(wc -l <"$fixture/marker") -eq 5 ]] || fail "tee failure stopped later demos"
 [[ $(grep -Fc 'failed(runner=0,tee=9)' "$fixture/results/summary.tsv") == 5 ]] || \
   fail "tee failures were not recorded"
 
