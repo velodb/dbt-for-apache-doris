@@ -86,6 +86,14 @@ The adapter declares dbt Core and the MySQL connector as dependencies, so they
 are installed automatically. You do not need to install dbt Core separately or
 download a standalone binary.
 
+`dbt --version` lists this adapter as the `doris` plugin. dbt Core looks up a
+plugin's latest release under the `dbt-<plugin>` name on PyPI, which here is
+the separate `dbt-doris` distribution, so the update status it prints, such as
+"Ahead of latest version!", does not describe this package. Check
+[PyPI](https://pypi.org/project/dbt-for-apache-doris/) for new releases. Do not
+install `dbt-doris` in the same environment: both distributions install the
+`dbt.adapters.doris` module.
+
 ## Quickstart
 
 Add a Doris output to `~/.dbt/profiles.yml`. Keep credentials outside version

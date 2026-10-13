@@ -34,7 +34,11 @@ flaky
 ipdb
 pip-tools
 pre-commit
-pytest
+# dbt-tests-adapter 1.20 base classes, and the Functional tests that extend
+# them, define class-scoped fixtures as instance methods. pytest 9 deprecates
+# that with PytestRemovedIn10Warning and pytest 10 removes it, so keep pytest
+# below 10 until dbt-tests-adapter migrates.
+pytest<10
 pytest-dotenv
 pytest-logbook
 # pytest-logbook still imports logbook.compat, which logbook removed in 1.8.
