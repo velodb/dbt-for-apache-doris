@@ -20,7 +20,7 @@
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import ContextManager, Optional, Union
+from typing import Any, ContextManager, Dict, Optional, Union
 
 import mysql.connector
 from mysql.connector.constants import FieldType
@@ -33,6 +33,18 @@ from dbt.adapters.events.logging import AdapterLogger
 
 logger = AdapterLogger("doris")
 
+# Arguments the adapter passes to mysql.connector.connect itself.
+RESERVED_CONNECTION_PARAMETERS = (
+    "host",
+    "port",
+    "user",
+    "password",
+    "database",
+    "buffered",
+    "charset",
+    "get_warnings",
+)
+
 
 @dataclass
 class DorisCredentials(Credentials):
@@ -42,6 +54,15 @@ class DorisCredentials(Credentials):
     password: str = ""
     database: Optional[str] = None
     schema: Optional[str] = None
+    # Extra arguments for mysql.connector.connect, e.g. {"ssl_disabled": True}.
+    connection_parameters: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self):
+        for key in self.connection_parameters or {}:
+            if key in RESERVED_CONNECTION_PARAMETERS:
+                raise exceptions.DbtValidationError(
+                    f"The connection parameter `{key}` is reserved."
+                )
 
     @property
     def type(self):
@@ -74,6 +95,7 @@ class DorisConnectionManager(SQLConnectionManager):
             "charset": "utf8",
             "get_warnings": True,
         }
+        kwargs.update(credentials.connection_parameters or {})
 
         try:
             connection.handle = mysql.connector.connect(**kwargs)

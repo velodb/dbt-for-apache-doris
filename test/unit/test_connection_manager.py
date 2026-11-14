@@ -141,3 +141,42 @@ def test_add_query_preserves_select_result(monkeypatch):
     manager.add_query("select 1")
 
     cursor.nextset.assert_not_called()
+
+
+def _open_with(monkeypatch, **credentials):
+    from dbt.adapters.contracts.connection import Connection
+
+    from dbt.adapters.doris.connections import DorisCredentials
+
+    seen = {}
+
+    def connect(**kwargs):
+        seen.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(mysql.connector, "connect", connect)
+    creds = DorisCredentials(schema="analytics", database="analytics", **credentials)
+    DorisConnectionManager.open(Connection(type="doris", name="test", credentials=creds))
+    return seen
+
+
+def test_open_passes_connection_parameters_to_mysql_connector(monkeypatch):
+    seen = _open_with(
+        monkeypatch, connection_parameters={"ssl_disabled": True, "use_pure": True}
+    )
+
+    assert seen["ssl_disabled"] is True
+    assert seen["use_pure"] is True
+    assert seen["host"] == "127.0.0.1"
+
+
+def test_connection_parameters_cannot_override_adapter_arguments():
+    from dbt.adapters.doris.connections import DorisCredentials
+    from dbt.exceptions import DbtValidationError
+
+    with pytest.raises(DbtValidationError, match="`host` is reserved"):
+        DorisCredentials(
+            schema="analytics",
+            database="analytics",
+            connection_parameters={"host": "other"},
+        )
