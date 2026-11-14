@@ -116,6 +116,11 @@ doris_demo:
 On Doris, dbt `schema` is a Doris Database. Omit dbt `database` for the
 Internal Catalog.
 
+Use `connection_parameters` to pass other arguments to
+`mysql.connector.connect`, such as `ssl_disabled: true` or `use_pure: true`.
+The arguments the adapter sets itself (`host`, `port`, `user`, `password`,
+`database`, `buffered`, `charset`, `get_warnings`) are reserved.
+
 Create a new `doris-demo` directory with a `models` subdirectory, then add:
 
 ```yaml
