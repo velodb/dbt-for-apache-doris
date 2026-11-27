@@ -95,6 +95,7 @@ def test_add_query_forwards_dbt_core_retry_options(monkeypatch):
 def test_add_query_drains_every_extra_non_select_result(monkeypatch):
     cursor = SimpleNamespace(
         with_rows=False,
+        rowcount=-1,
         nextset=Mock(side_effect=[True, True, False]),
     )
     monkeypatch.setattr(
@@ -112,6 +113,7 @@ def test_add_query_drains_every_extra_non_select_result(monkeypatch):
 def test_add_query_propagates_an_error_from_a_later_result(monkeypatch):
     cursor = SimpleNamespace(
         with_rows=False,
+        rowcount=-1,
         nextset=Mock(
             side_effect=mysql.connector.DatabaseError(
                 "later statement failed"
@@ -141,3 +143,25 @@ def test_add_query_preserves_select_result(monkeypatch):
     manager.add_query("select 1")
 
     cursor.nextset.assert_not_called()
+
+
+def test_add_query_keeps_rows_affected_after_draining(monkeypatch):
+    # mysql-connector's nextset() resets rowcount to -1 when no result set
+    # is left.
+    def nextset():
+        cursor.rowcount = -1
+        return None
+
+    cursor = SimpleNamespace(with_rows=False, rowcount=5, nextset=nextset)
+    monkeypatch.setattr(
+        SQLConnectionManager,
+        "add_query",
+        lambda self, *args, **kwargs: (object(), cursor),
+    )
+    manager = object.__new__(DorisConnectionManager)
+
+    manager.add_query("insert into example select * from source")
+
+    response = DorisConnectionManager.get_response(cursor)
+    assert response.rows_affected == 5
+    assert response._message == "5 rows affected"

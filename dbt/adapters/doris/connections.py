@@ -121,8 +121,10 @@ class DorisConnectionManager(SQLConnectionManager):
         code = "SUCCESS"
         num_rows = 0
 
-        if cursor is not None and cursor.rowcount is not None:
-            num_rows = cursor.rowcount
+        if cursor is not None:
+            rows = getattr(cursor, "_doris_rows_affected", cursor.rowcount)
+            if rows is not None:
+                num_rows = rows
         return AdapterResponse(
             code=code,
             _message=f"{num_rows} rows affected",
@@ -247,10 +249,14 @@ class DorisConnectionManager(SQLConnectionManager):
         )
 
         if cursor is not None and not cursor.with_rows:
+            # nextset() resets cursor.rowcount to -1 once no result set is
+            # left, so keep the statement's count for get_response().
+            rows_affected = cursor.rowcount
             drained = 0
             with self.exception_handler(sql):
                 while cursor.nextset():
                     drained += 1
+            cursor._doris_rows_affected = rows_affected
             if drained:
                 logger.debug(
                     f"Drained {drained} extra result set(s); a macro emitted "
